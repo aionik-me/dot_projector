@@ -1,15 +1,14 @@
 class DotProjector {
     constructor() {
         this.canvas = document.getElementById('dotCanvas');
-        this.handCanvas = document.getElementById('handCanvas');
-        this.handCtx = this.handCanvas.getContext('2d');
         
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(75, this.canvas.clientWidth / this.canvas.clientHeight, 0.1, 1000);
         this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, alpha: true, antialias: true });
         
-        this.dots = [];
-        this.dotPattern = [];
+        this.instancedDots = null;
+        this.dotPositions = [];
+        this.dotPhases = [];
         this.palmData = null;
         this.isScanning = false;
         this.animationFrame = 0;
@@ -29,6 +28,11 @@ class DotProjector {
             [0, 17] // Palm base
         ];
         
+        // WebGL hand visualization
+        this.handMesh = null;
+        this.handLines = null;
+        this.handPoints = null;
+        
         // Capture properties
         this.captures = JSON.parse(localStorage.getItem('palmCaptures') || '[]');
         this.isAutoCapturing = false;
@@ -43,9 +47,6 @@ class DotProjector {
         this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
         
-        // Setup hand canvas
-        this.handCanvas.width = this.canvas.clientWidth;
-        this.handCanvas.height = this.canvas.clientHeight;
         
         this.camera.position.z = 50;
         
@@ -57,6 +58,7 @@ class DotProjector {
         this.scene.add(directionalLight);
         
         this.createDotPattern();
+        this.createHandVisualization();
         this.setupHandTracking();
         this.setupEventListeners();
         
@@ -65,27 +67,122 @@ class DotProjector {
     
     createDotPattern() {
         const dotGeometry = new THREE.SphereGeometry(0.3, 8, 8);
+        const dotMaterial = new THREE.MeshPhongMaterial({
+            color: new THREE.Color(0, 0.7, 0.35),
+            emissive: new THREE.Color(0, 0.35, 0.2),
+            emissiveIntensity: 0.5
+        });
+        
         const gridSize = 30;
         const spacing = 2.5;
+        let count = 0;
+        
+        // Calculate total number of dots
+        for (let x = -gridSize/2; x <= gridSize/2; x += spacing) {
+            for (let y = -gridSize/2; y <= gridSize/2; y += spacing) {
+                count++;
+            }
+        }
+        
+        // Create instanced mesh
+        this.instancedDots = new THREE.InstancedMesh(dotGeometry, dotMaterial, count);
+        this.instancedDots.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        
+        // Add color attribute for per-instance colors
+        const colors = new Float32Array(count * 3);
+        this.instancedDots.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+        this.instancedDots.instanceColor.setUsage(THREE.DynamicDrawUsage);
+        dotGeometry.setAttribute('instanceColor', this.instancedDots.instanceColor);
+        
+        // Enable vertex colors in material
+        dotMaterial.vertexColors = true;
+        
+        // Initialize positions and phases
+        const matrix = new THREE.Matrix4();
+        const color = new THREE.Color();
+        let index = 0;
         
         for (let x = -gridSize/2; x <= gridSize/2; x += spacing) {
             for (let y = -gridSize/2; y <= gridSize/2; y += spacing) {
+                // Set initial position
+                matrix.setPosition(x, y, 0);
+                this.instancedDots.setMatrixAt(index, matrix);
+                
+                // Set initial color
                 const intensity = Math.random() * 0.5 + 0.5;
-                const dotMaterial = new THREE.MeshPhongMaterial({
-                    color: new THREE.Color(0, intensity, intensity * 0.5),
-                    emissive: new THREE.Color(0, intensity * 0.5, intensity * 0.3),
-                    emissiveIntensity: 0.5
-                });
+                color.setRGB(0, intensity, intensity * 0.5);
+                this.instancedDots.setColorAt(index, color);
                 
-                const dot = new THREE.Mesh(dotGeometry, dotMaterial);
-                dot.position.set(x, y, 0);
-                dot.basePosition = { x, y, z: 0 };
-                dot.phase = Math.random() * Math.PI * 2;
+                // Store position and phase for animation
+                this.dotPositions.push({ x, y, z: 0 });
+                this.dotPhases.push(Math.random() * Math.PI * 2);
                 
-                this.dots.push(dot);
-                this.scene.add(dot);
+                index++;
             }
         }
+        
+        this.instancedDots.instanceMatrix.needsUpdate = true;
+        this.instancedDots.instanceColor.needsUpdate = true;
+        
+        this.scene.add(this.instancedDots);
+    }
+    
+    createHandVisualization() {
+        // Create line geometry for hand skeleton
+        const lineGeometry = new THREE.BufferGeometry();
+        const linePositions = new Float32Array(this.handConnections.length * 2 * 3); // 2 points per connection, 3 coords per point
+        lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+        
+        const lineMaterial = new THREE.LineBasicMaterial({
+            color: 0x00ff88,
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.8
+        });
+        
+        this.handLines = new THREE.LineSegments(lineGeometry, lineMaterial);
+        this.handLines.visible = false;
+        this.scene.add(this.handLines);
+        
+        // Create points for landmarks
+        const pointGeometry = new THREE.BufferGeometry();
+        const pointPositions = new Float32Array(21 * 3); // 21 landmarks, 3 coords each
+        const pointSizes = new Float32Array(21); // Size for each point
+        pointGeometry.setAttribute('position', new THREE.BufferAttribute(pointPositions, 3));
+        pointGeometry.setAttribute('size', new THREE.BufferAttribute(pointSizes, 1));
+        
+        const pointMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                color: { value: new THREE.Color(0x00ff88) }
+            },
+            vertexShader: `
+                attribute float size;
+                varying vec3 vColor;
+                void main() {
+                    vColor = vec3(0.0, 1.0, 0.5);
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_PointSize = size * (300.0 / -mvPosition.z);
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor;
+                void main() {
+                    vec2 xy = gl_PointCoord.xy - vec2(0.5);
+                    float r = dot(xy, xy);
+                    if (r > 0.25) discard;
+                    
+                    float intensity = 1.0 - r * 4.0;
+                    gl_FragColor = vec4(vColor * intensity, intensity);
+                }
+            `,
+            transparent: true,
+            depthTest: false
+        });
+        
+        this.handPoints = new THREE.Points(pointGeometry, pointMaterial);
+        this.handPoints.visible = false;
+        this.scene.add(this.handPoints);
     }
     
     setupHandTracking() {
@@ -115,8 +212,6 @@ class DotProjector {
             this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
-            this.handCanvas.width = this.canvas.clientWidth;
-            this.handCanvas.height = this.canvas.clientHeight;
         });
     }
     
@@ -171,166 +266,72 @@ class DotProjector {
     }
     
     onHandResults(results) {
-        // Clear hand canvas
-        this.handCtx.clearRect(0, 0, this.handCanvas.width, this.handCanvas.height);
-        
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             this.palmData = results.multiHandLandmarks[0];
-            this.drawHandVisualization(this.palmData);
+            this.updateHandVisualization(this.palmData);
             this.updatePalmVisualization(this.palmData);
             this.updateMetrics(this.palmData);
+            
+            // Hide guide overlay when hand is detected
+            document.getElementById('guidanceOverlay').style.opacity = '0.2';
         } else {
             this.palmData = null;
             this.updateStatus('Place your palm in view', 'warning');
             // Show guide overlay when no hand is detected
             document.getElementById('guidanceOverlay').style.opacity = '1';
+            
+            // Hide hand visualization
+            this.handLines.visible = false;
+            this.handPoints.visible = false;
         }
     }
     
-    drawHandVisualization(landmarks) {
-        const ctx = this.handCtx;
-        const w = this.handCanvas.width;
-        const h = this.handCanvas.height;
+    updateHandVisualization(landmarks) {
+        // Convert landmarks to 3D coordinates
+        const scale = 60; // Match the dot grid scale
         
-        // Hide guide overlay when hand is detected
-        document.getElementById('guidanceOverlay').style.opacity = '0.2';
+        // Update line positions
+        const linePositions = this.handLines.geometry.attributes.position.array;
+        let lineIndex = 0;
         
-        // Clear and setup
-        ctx.save();
-        
-        // Calculate palm metrics
-        const avgZ = landmarks.reduce((sum, pt) => sum + pt.z, 0) / landmarks.length;
-        const palmCenter = this.calculatePalmCenter(landmarks);
-        
-        // Draw filled palm shape with smooth curves
-        ctx.beginPath();
-        ctx.moveTo(landmarks[0].x * w, landmarks[0].y * h); // Wrist
-        
-        // Curve through thumb base
-        ctx.quadraticCurveTo(
-            landmarks[1].x * w, landmarks[1].y * h,
-            landmarks[2].x * w, landmarks[2].y * h
-        );
-        
-        // Curve to index finger base
-        ctx.quadraticCurveTo(
-            landmarks[3].x * w, landmarks[3].y * h,
-            landmarks[5].x * w, landmarks[5].y * h
-        );
-        
-        // Through finger bases
-        ctx.lineTo(landmarks[9].x * w, landmarks[9].y * h);
-        ctx.lineTo(landmarks[13].x * w, landmarks[13].y * h);
-        ctx.lineTo(landmarks[17].x * w, landmarks[17].y * h);
-        
-        // Curve back to wrist
-        ctx.quadraticCurveTo(
-            landmarks[18].x * w, landmarks[18].y * h,
-            landmarks[0].x * w, landmarks[0].y * h
-        );
-        
-        ctx.closePath();
-        
-        // Create depth-based gradient fill
-        const gradient = ctx.createRadialGradient(
-            palmCenter.x * w, palmCenter.y * h, 0,
-            palmCenter.x * w, palmCenter.y * h, w * 0.3
-        );
-        
-        // Fix: z is negative when closer to camera, positive when further
-        const depthColor = avgZ < -0.05 ? [255, 100, 100] : avgZ > 0.05 ? [100, 150, 255] : [100, 255, 150]; // Red if too close, blue if too far, green if good
-        gradient.addColorStop(0, `rgba(${depthColor[0]}, ${depthColor[1]}, ${depthColor[2]}, 0.3)`);
-        gradient.addColorStop(1, `rgba(${depthColor[0]}, ${depthColor[1]}, ${depthColor[2]}, 0.1)`);
-        
-        ctx.fillStyle = gradient;
-        ctx.fill();
-        
-        // Draw palm outline
-        ctx.strokeStyle = `rgba(${depthColor[0]}, ${depthColor[1]}, ${depthColor[2]}, 0.8)`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        // Draw fingers as filled shapes with labels
-        const fingerGroups = [
-            { points: [1, 2, 3, 4], name: 'Thumb', color: [255, 160, 122] },
-            { points: [5, 6, 7, 8], name: 'Index', color: [152, 216, 200] },
-            { points: [9, 10, 11, 12], name: 'Middle', color: [135, 206, 235] },
-            { points: [13, 14, 15, 16], name: 'Ring', color: [221, 160, 221] },
-            { points: [17, 18, 19, 20], name: 'Pinky', color: [240, 230, 140] }
-        ];
-        
-        ctx.globalAlpha = 0.4;
-        fingerGroups.forEach((finger, idx) => {
-            ctx.beginPath();
+        this.handConnections.forEach(([start, end]) => {
+            // Start point
+            linePositions[lineIndex++] = (landmarks[start].x - 0.5) * scale;
+            linePositions[lineIndex++] = -(landmarks[start].y - 0.5) * scale;
+            linePositions[lineIndex++] = -landmarks[start].z * 100;
             
-            // Draw finger shape
-            const base1 = landmarks[finger.points[0]];
-            const base2 = landmarks[idx === 0 ? 2 : finger.points[0]];
-            const tip = landmarks[finger.points[3]];
-            
-            ctx.moveTo(base1.x * w, base1.y * h);
-            
-            // Draw finger sides
-            finger.points.forEach(point => {
-                ctx.lineTo(landmarks[point].x * w, landmarks[point].y * h);
-            });
-            
-            // Close finger shape
-            ctx.lineTo(base2.x * w, base2.y * h);
-            ctx.closePath();
-            
-            // Fill with custom finger color
-            const fingerGradient = ctx.createLinearGradient(
-                base1.x * w, base1.y * h,
-                tip.x * w, tip.y * h
-            );
-            fingerGradient.addColorStop(0, `rgba(${finger.color[0]}, ${finger.color[1]}, ${finger.color[2]}, 0.3)`);
-            fingerGradient.addColorStop(1, `rgba(${finger.color[0]}, ${finger.color[1]}, ${finger.color[2]}, 0.1)`);
-            
-            ctx.fillStyle = fingerGradient;
-            ctx.fill();
+            // End point
+            linePositions[lineIndex++] = (landmarks[end].x - 0.5) * scale;
+            linePositions[lineIndex++] = -(landmarks[end].y - 0.5) * scale;
+            linePositions[lineIndex++] = -landmarks[end].z * 100;
         });
         
-        ctx.globalAlpha = 1;
+        this.handLines.geometry.attributes.position.needsUpdate = true;
+        this.handLines.visible = true;
         
-        // Draw key feature points - all fingertips and important landmarks
-        const keyPoints = [
-            { idx: 0, label: 'W', color: '#ff6b6b' }, // Wrist
-            { idx: 9, label: 'C', color: '#4ecdc4' }, // Center
-            { idx: 4, label: 'T', color: '#ffa07a' }, // Thumb tip
-            { idx: 8, label: 'I', color: '#98d8c8' }, // Index tip
-            { idx: 12, label: 'M', color: '#87ceeb' }, // Middle tip
-            { idx: 16, label: 'R', color: '#dda0dd' }, // Ring tip
-            { idx: 20, label: 'P', color: '#f0e68c' }, // Pinky tip
-        ];
+        // Update point positions and sizes
+        const pointPositions = this.handPoints.geometry.attributes.position.array;
+        const pointSizes = this.handPoints.geometry.attributes.size.array;
         
-        keyPoints.forEach(point => {
-            const x = landmarks[point.idx].x * w;
-            const y = landmarks[point.idx].y * h;
+        landmarks.forEach((landmark, idx) => {
+            const i = idx * 3;
+            pointPositions[i] = (landmark.x - 0.5) * scale;
+            pointPositions[i + 1] = -(landmark.y - 0.5) * scale;
+            pointPositions[i + 2] = -landmark.z * 100;
             
-            // Draw point
-            ctx.beginPath();
-            ctx.arc(x, y, 6, 0, 2 * Math.PI);
-            ctx.fillStyle = point.color;
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-            
-            // Draw label
-            ctx.fillStyle = '#fff';
-            ctx.font = '12px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText(point.label, x, y - 10);
+            // Size based on importance
+            if ([4, 8, 12, 16, 20].includes(idx)) {
+                pointSizes[idx] = 8; // Fingertips
+            } else if (idx === 0) {
+                pointSizes[idx] = 10; // Wrist
+            } else {
+                pointSizes[idx] = 5; // Other points
+            }
         });
         
-        // Draw feature extraction visualization
-        this.drawFeatureExtraction(landmarks, ctx, w, h);
-        
-        // Draw edge proximity warnings
-        this.drawEdgeWarnings(landmarks, ctx, w, h);
-        
-        ctx.restore();
+        this.handPoints.geometry.attributes.position.needsUpdate = true;
+        this.handPoints.geometry.attributes.size.needsUpdate = true;
+        this.handPoints.visible = true;
     }
     
     drawFeatureExtraction(landmarks, ctx, w, h) {
@@ -447,11 +448,17 @@ class DotProjector {
             z: -palmCenter.z * 100
         };
         
-        this.dots.forEach((dot) => {
+        // Update instanced dots
+        const matrix = new THREE.Matrix4();
+        const rotation = new THREE.Euler();
+        const scale = new THREE.Vector3();
+        const color = new THREE.Color();
+        
+        this.dotPositions.forEach((dotPos, index) => {
             // Calculate distance to palm center in 3D
             const distToPalm = Math.sqrt(
-                Math.pow(dot.basePosition.x - palm3D.x, 2) + 
-                Math.pow(dot.basePosition.y - palm3D.y, 2)
+                Math.pow(dotPos.x - palm3D.x, 2) + 
+                Math.pow(dotPos.y - palm3D.y, 2)
             );
             
             // Calculate influence based on hand landmarks
@@ -460,37 +467,50 @@ class DotProjector {
                 const landmarkX = (landmark.x - 0.5) * 60;
                 const landmarkY = -(landmark.y - 0.5) * 60;
                 const dist = Math.sqrt(
-                    Math.pow(dot.basePosition.x - landmarkX, 2) + 
-                    Math.pow(dot.basePosition.y - landmarkY, 2)
+                    Math.pow(dotPos.x - landmarkX, 2) + 
+                    Math.pow(dotPos.y - landmarkY, 2)
                 );
                 const influence = Math.max(0, 1 - dist / 15);
                 maxInfluence = Math.max(maxInfluence, influence);
             });
             
             // Create ripple effect from palm
-            const waveOffset = Math.sin(this.animationFrame * 0.02 + dot.phase - distToPalm * 0.1) * 3;
+            const waveOffset = Math.sin(this.animationFrame * 0.02 + this.dotPhases[index] - distToPalm * 0.1) * 3;
             
             // Z position based on proximity to hand
-            dot.position.z = dot.basePosition.z + waveOffset * maxInfluence + palm3D.z * maxInfluence * 0.1;
+            const zPos = dotPos.z + waveOffset * maxInfluence + palm3D.z * maxInfluence * 0.1;
+            
+            // Set scale based on influence
+            const scaleValue = 1 + maxInfluence * 0.8;
+            scale.set(scaleValue, scaleValue, scaleValue);
+            
+            // Set rotation for dynamic effect
+            if (maxInfluence > 0) {
+                rotation.x = this.animationFrame * 0.02 * maxInfluence;
+                rotation.y = this.animationFrame * 0.02 * maxInfluence;
+            } else {
+                rotation.set(0, 0, 0);
+            }
+            
+            // Compose matrix
+            matrix.compose(
+                new THREE.Vector3(dotPos.x, dotPos.y, zPos),
+                new THREE.Quaternion().setFromEuler(rotation),
+                scale
+            );
+            this.instancedDots.setMatrixAt(index, matrix);
             
             // Color based on distance and hand features
             const hue = (120 - distance * 2 + maxInfluence * 60) / 360;
             const saturation = alignment * (0.5 + maxInfluence * 0.5);
             const lightness = 0.3 + maxInfluence * 0.6;
             
-            dot.material.color.setHSL(hue, saturation, lightness);
-            dot.material.emissive.setHSL(hue, saturation, lightness * 0.7);
-            dot.material.emissiveIntensity = maxInfluence;
-            
-            // Scale dots near hand features
-            dot.scale.setScalar(1 + maxInfluence * 0.8);
-            
-            // Rotate dots for dynamic effect
-            if (maxInfluence > 0) {
-                dot.rotation.x += 0.02 * maxInfluence;
-                dot.rotation.y += 0.02 * maxInfluence;
-            }
+            color.setHSL(hue, saturation, lightness);
+            this.instancedDots.setColorAt(index, color);
         });
+        
+        this.instancedDots.instanceMatrix.needsUpdate = true;
+        this.instancedDots.instanceColor.needsUpdate = true;
         
         // Check if hand is fully visible
         const margin = 0.05; // Match alignment calculation
@@ -1243,14 +1263,28 @@ class DotProjector {
         
         this.animationFrame++;
         
-        this.dots.forEach((dot) => {
-            if (!this.palmData) {
-                const time = this.animationFrame * 0.01;
-                dot.position.z = Math.sin(time + dot.phase) * 2;
-                dot.rotation.x += 0.01;
-                dot.rotation.y += 0.01;
-            }
-        });
+        // Animate dots when no palm is detected
+        if (!this.palmData && this.instancedDots) {
+            const matrix = new THREE.Matrix4();
+            const rotation = new THREE.Euler();
+            const scale = new THREE.Vector3(1, 1, 1);
+            const time = this.animationFrame * 0.01;
+            
+            this.dotPositions.forEach((dotPos, index) => {
+                const zPos = Math.sin(time + this.dotPhases[index]) * 2;
+                rotation.x = time;
+                rotation.y = time;
+                
+                matrix.compose(
+                    new THREE.Vector3(dotPos.x, dotPos.y, zPos),
+                    new THREE.Quaternion().setFromEuler(rotation),
+                    scale
+                );
+                this.instancedDots.setMatrixAt(index, matrix);
+            });
+            
+            this.instancedDots.instanceMatrix.needsUpdate = true;
+        }
         
         this.renderer.render(this.scene, this.camera);
     }
