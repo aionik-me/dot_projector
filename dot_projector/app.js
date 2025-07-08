@@ -398,6 +398,10 @@ class DotProjector {
             document.getElementById('startBtn').classList.add('secondary');
             document.getElementById('captureBtn').disabled = false;
             
+            // Show loading status immediately
+            this.updateStatus('Starting camera...', 'scanning');
+            document.getElementById('guidanceOverlay').style.opacity = '0.8';
+            
             const constraints = {
                 video: {
                     width: { ideal: 1280 },
@@ -416,11 +420,17 @@ class DotProjector {
             
             this.videoElement.onloadedmetadata = () => {
                 this.videoElement.play();
+                
+                // Enable IR mode after camera starts (prevents delay)
+                if (!this.irMode) {
+                    this.toggleIRMode();
+                }
+                
+                this.updateStatus('Detecting hands...', 'scanning');
                 this.detectHand();
             };
             
-            this.updateStatus('Scanning...', 'scanning');
-            document.getElementById('guidanceOverlay').style.opacity = '0.3';
+            // Guidance is already shown above
         } catch (error) {
             console.error('Camera access error:', error);
             this.updateStatus('Camera access denied', 'error');
@@ -479,6 +489,10 @@ class DotProjector {
         // Convert landmarks to 3D coordinates
         const scale = 60; // Match the dot grid scale
         
+        // Show rotation indicator if needed
+        const rotation = this.checkHandRotation(landmarks);
+        this.updateRotationIndicator(rotation);
+        
         // Update line positions
         const linePositions = this.handLines.geometry.attributes.position.array;
         let lineIndex = 0;
@@ -513,17 +527,56 @@ class DotProjector {
             const distanceScale = Math.max(0.5, Math.min(1.5, 1.0 - distance / 50));
             
             if ([4, 8, 12, 16, 20].includes(idx)) {
-                pointSizes[idx] = 6 * distanceScale; // Fingertips
+                pointSizes[idx] = 5 * distanceScale; // Fingertips (reduced from 6)
             } else if (idx === 0) {
-                pointSizes[idx] = 8 * distanceScale; // Wrist
+                pointSizes[idx] = 7 * distanceScale; // Wrist (reduced from 8)
             } else {
-                pointSizes[idx] = 4 * distanceScale; // Other points
+                pointSizes[idx] = 3.5 * distanceScale; // Other points (reduced from 4)
             }
         });
         
         this.handPoints.geometry.attributes.position.needsUpdate = true;
         this.handPoints.geometry.attributes.size.needsUpdate = true;
         this.handPoints.visible = true;
+    }
+    
+    updateRotationIndicator(rotation) {
+        // Show visual rotation guide
+        let indicator = document.getElementById('rotationIndicator');
+        
+        if (Math.abs(rotation) > 30) {
+            if (!indicator) {
+                indicator = document.createElement('div');
+                indicator.id = 'rotationIndicator';
+                indicator.className = 'rotation-indicator';
+                document.querySelector('.overlay-ui').appendChild(indicator);
+            }
+            
+            // Update rotation arrow and text
+            if (rotation > 0) {
+                indicator.innerHTML = `
+                    <svg width="60" height="60" viewBox="0 0 60 60">
+                        <path d="M30 10 Q45 15 50 30 Q45 45 30 50 Q15 45 10 30 Q15 15 30 10" 
+                              fill="none" stroke="#ffaa00" stroke-width="2" opacity="0.5"/>
+                        <path d="M45 20 L50 30 L40 28" fill="#ffaa00"/>
+                    </svg>
+                    <span>Rotate CCW</span>
+                `;
+            } else {
+                indicator.innerHTML = `
+                    <svg width="60" height="60" viewBox="0 0 60 60">
+                        <path d="M30 10 Q15 15 10 30 Q15 45 30 50 Q45 45 50 30 Q45 15 30 10" 
+                              fill="none" stroke="#ffaa00" stroke-width="2" opacity="0.5"/>
+                        <path d="M15 20 L10 30 L20 28" fill="#ffaa00"/>
+                    </svg>
+                    <span>Rotate CW</span>
+                `;
+            }
+            
+            indicator.style.display = 'flex';
+        } else if (indicator) {
+            indicator.style.display = 'none';
+        }
     }
     
     drawFeatureExtraction(landmarks, ctx, w, h) {
@@ -729,14 +782,14 @@ class DotProjector {
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
         } else if (!fingersExtended) {
-            this.updateStatus('Extend your fingers', 'warning');
+            this.updateStatus('Spread your fingers wide', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance < 10) {
-            this.updateStatus('Move hand further away', 'warning');
+        } else if (distance < 8) {
+            this.updateStatus('Move hand back slightly', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance > 40) {
+        } else if (distance > 45) {
             this.updateStatus('Move hand closer', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
@@ -744,9 +797,35 @@ class DotProjector {
             this.updateStatus('Center your palm', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance >= 10 && distance <= 40 && alignment >= 0.3 && fingersExtended) {
-            this.updateStatus('Perfect! Hold steady', 'success');
-            this.handlePerfectAlignment();
+        } else if (distance >= 8 && distance <= 45 && alignment >= 0.3 && fingersExtended) {
+            // Additional validation for proper hand position (with lenient thresholds)
+            const isHandFlat = this.checkHandFlatness(landmarks);
+            const isPalmFacingCamera = this.checkPalmOrientation(landmarks);
+            
+            // Check for hand rotation
+            const rotation = this.checkHandRotation(landmarks);
+            
+            if (!isPalmFacingCamera) {
+                this.updateStatus('Turn palm toward camera', 'warning');
+                this.perfectAlignmentTime = 0;
+                this.isAutoCapturing = false;
+            } else if (Math.abs(rotation) > 30) {
+                // Hand is rotated too much
+                if (rotation > 0) {
+                    this.updateStatus('Rotate hand counter-clockwise ↺', 'warning');
+                } else {
+                    this.updateStatus('Rotate hand clockwise ↻', 'warning');
+                }
+                this.perfectAlignmentTime = 0;
+                this.isAutoCapturing = false;
+            } else if (!isHandFlat) {
+                // Hand flatness is a suggestion, not a requirement
+                this.updateStatus('Almost there! Flatten hand', 'success');
+                this.handlePerfectAlignment(); // Still allow capture
+            } else {
+                this.updateStatus('Perfect! Hold steady', 'success');
+                this.handlePerfectAlignment();
+            }
         }
     }
     
@@ -763,9 +842,9 @@ class DotProjector {
     calculateDistance(palmCenter) {
         // Convert z-coordinate to distance in cm
         // z is typically between -0.15 (close) and 0.15 (far)
-        // Let's use a more realistic conversion
-        const normalizedZ = Math.max(-0.2, Math.min(0.2, palmCenter.z));
-        return Math.round(25 + normalizedZ * 100);
+        // Adjusted for closer hand support
+        const normalizedZ = Math.max(-0.25, Math.min(0.25, palmCenter.z));
+        return Math.round(20 + normalizedZ * 100);
     }
     
     calculateAlignment(landmarks) {
@@ -889,6 +968,55 @@ class DotProjector {
         
         // Require at least 3 fingers to be extended
         return extendedCount >= 3;
+    }
+    
+    checkHandFlatness(landmarks) {
+        // Check if hand is relatively flat by comparing Z-coordinates
+        const fingerTips = [4, 8, 12, 16, 20];
+        const palmBase = landmarks[0].z;
+        
+        let maxDeviation = 0;
+        fingerTips.forEach(idx => {
+            const deviation = Math.abs(landmarks[idx].z - palmBase);
+            maxDeviation = Math.max(maxDeviation, deviation);
+        });
+        
+        // Hand is flat if fingertips are within 0.15 Z-units of palm (much more lenient)
+        // MediaPipe Z values are typically small, so 0.15 allows for natural hand curvature
+        return maxDeviation < 0.15;
+    }
+    
+    checkPalmOrientation(landmarks) {
+        // Check if palm is facing camera using normal vector
+        const normal = this.calculatePalmNormal(landmarks);
+        
+        // Palm should be facing mostly toward camera
+        // Normal.z should be negative (pointing toward camera)
+        // Using -0.5 allows up to ~60 degrees tilt, which is more natural
+        return normal.z < -0.5;
+    }
+    
+    checkHandRotation(landmarks) {
+        // Check hand rotation by comparing middle finger to wrist alignment
+        const wrist = landmarks[0];
+        const middleBase = landmarks[9];
+        const middleTip = landmarks[12];
+        
+        // Vector from wrist to middle finger base
+        const baseVector = {
+            x: middleBase.x - wrist.x,
+            y: middleBase.y - wrist.y
+        };
+        
+        // Expected vertical vector (straight up)
+        const verticalVector = { x: 0, y: -1 };
+        
+        // Calculate angle between vectors
+        const dot = baseVector.x * verticalVector.x + baseVector.y * verticalVector.y;
+        const det = baseVector.x * verticalVector.y - baseVector.y * verticalVector.x;
+        const angle = Math.atan2(det, dot) * (180 / Math.PI);
+        
+        return angle; // Returns rotation in degrees (positive = clockwise)
     }
     
     calculatePalmNormal(landmarks) {

@@ -533,3 +533,51 @@ body {
         transform: translate(-50%, -50%) scale(1);
     }
 }
+
+/* Rotation indicator */
+.rotation-indicator {
+    position: absolute;
+    top: 50%;
+    left: 20px;
+    transform: translateY(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 15px;
+    border-radius: 15px;
+    border: 2px solid #ffaa00;
+    box-shadow: 0 0 20px rgba(255, 170, 0, 0.5);
+    animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.rotation-indicator svg {
+    animation: rotate 2s ease-in-out infinite;
+}
+
+.rotation-indicator span {
+    color: #ffaa00;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+@keyframes pulseGlow {
+    0%, 100% {
+        box-shadow: 0 0 20px rgba(255, 170, 0, 0.5);
+    }
+    50% {
+        box-shadow: 0 0 40px rgba(255, 170, 0, 0.8);
+    }
+}
+
+@keyframes rotate {
+    0%, 100% {
+        transform: rotate(0deg);
+    }
+    50% {
+        transform: rotate(10deg);
+    }
+}
