@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DOT Projector - Palm Biometric Scanner</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="scanner-frame">
+            <div class="dot-projector-container">
+                <canvas id="dotCanvas"></canvas>
+                <canvas id="handCanvas"></canvas>
+                <div class="overlay-ui">
+                    <div class="status-indicator">
+                        <div class="status-light"></div>
+                        <span class="status-text">Ready to Scan</span>
+                    </div>
+                    
+                    <div class="guidance-overlay" id="guidanceOverlay">
+                        <svg class="palm-guide" viewBox="0 0 400 400">
+                            <defs>
+                                <linearGradient id="guideGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#00ff88;stop-opacity:0.3" />
+                                    <stop offset="100%" style="stop-color:#0088ff;stop-opacity:0.1" />
+                                </linearGradient>
+                                <filter id="glow">
+                                    <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+                                    <feMerge>
+                                        <feMergeNode in="coloredBlur"/>
+                                        <feMergeNode in="SourceGraphic"/>
+                                    </feMerge>
+                                </filter>
+                            </defs>
+                            <path d="M200,100 Q180,120 170,150 L165,200 Q165,250 180,280 L200,300 L220,280 Q235,250 235,200 L230,150 Q220,120 200,100" 
+                                  fill="none" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <circle cx="200" cy="100" r="15" fill="none" stroke="url(#guideGradient)" stroke-width="2" opacity="0.6"/>
+                            <line x1="170" y1="150" x2="150" y2="120" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <line x1="180" y1="150" x2="170" y2="100" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <line x1="200" y1="150" x2="200" y2="80" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <line x1="220" y1="150" x2="230" y2="100" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <line x1="230" y1="150" x2="250" y2="120" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
+                            <text x="200" y="380" text-anchor="middle" class="guide-text">Place palm here</text>
+                        </svg>
+                    </div>
+                    
+                    <div class="feedback-panel">
+                        <div class="metric-item">
+                            <span class="metric-label">Distance</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill distance-fill"></div>
+                            </div>
+                            <span class="metric-value distance-value">--</span>
+                        </div>
+                        
+                        <div class="metric-item">
+                            <span class="metric-label">Alignment</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill alignment-fill"></div>
+                            </div>
+                            <span class="metric-value alignment-value">--</span>
+                        </div>
+                        
+                        <div class="metric-item">
+                            <span class="metric-label">Features</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill features-fill"></div>
+                            </div>
+                            <span class="metric-value features-value">--</span>
+                        </div>
+                    </div>
+                    
+                    <div class="instructions">
+                        <p class="instruction-text">Position your palm in the center</p>
+                    </div>
+                </div>
+            </div>
+            
+            <video id="inputVideo" style="display: none;"></video>
+            
+            <div class="controls">
+                <button id="startBtn" class="control-btn primary">Start Scanning</button>
+                <button id="captureBtn" class="control-btn secondary" disabled>Capture</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
