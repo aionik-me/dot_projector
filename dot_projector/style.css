@@ -180,6 +180,48 @@ body {
     display: flex;
     gap: 20px;
     justify-content: center;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.camera-selector-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 10px 20px;
+    border-radius: 25px;
+    backdrop-filter: blur(10px);
+}
+
+.camera-selector-wrapper label {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #888;
+}
+
+.camera-selector {
+    background: rgba(0, 0, 0, 0.3);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 8px 15px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+    outline: none;
+    transition: all 0.3s ease;
+}
+
+.camera-selector:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.camera-selector:focus {
+    border-color: #00ff88;
+    box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.3);
 }
 
 .control-btn {
@@ -208,6 +250,12 @@ body {
     background: rgba(255, 255, 255, 0.1);
     color: #fff;
     backdrop-filter: blur(10px);
+}
+
+.secondary.active {
+    background: linear-gradient(135deg, #ff00ff 0%, #8800ff 100%);
+    color: #fff;
+    box-shadow: 0 0 20px rgba(255, 0, 255, 0.4);
 }
 
 .secondary:hover:not(:disabled) {
@@ -301,6 +349,11 @@ body {
     border-radius: 10px;
     overflow: hidden;
     transition: transform 0.3s;
+}
+
+.capture-item.ir-capture {
+    border: 2px solid #ff00ff;
+    box-shadow: 0 0 20px rgba(255, 0, 255, 0.3);
 }
 
 .capture-item:hover {

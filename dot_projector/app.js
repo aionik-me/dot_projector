@@ -40,6 +40,16 @@ class DotProjector {
         this.lastCaptureTime = 0;
         this.captureCooldown = 3000; // 3 seconds between captures
         
+        // IR mode
+        this.irMode = false;
+        this.veinPattern = null;
+        
+        // Camera management
+        this.availableCameras = [];
+        this.selectedCameraId = null;
+        this.selectedIRCameraId = null;
+        this.hasIRCamera = false;
+        
         this.init();
     }
     
@@ -207,6 +217,7 @@ class DotProjector {
         document.getElementById('captureBtn').addEventListener('click', () => this.capture());
         document.getElementById('galleryBtn').addEventListener('click', () => this.showGallery());
         document.getElementById('closeGalleryBtn').addEventListener('click', () => this.hideGallery());
+        document.getElementById('irModeBtn').addEventListener('click', () => this.toggleIRMode());
         
         window.addEventListener('resize', () => {
             this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
@@ -215,18 +226,162 @@ class DotProjector {
         });
     }
     
+    async detectCameras() {
+        try {
+            // Request initial permissions to get camera labels
+            await navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                stream.getTracks().forEach(track => track.stop());
+            });
+            
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            this.availableCameras = devices.filter(device => device.kind === 'videoinput');
+            
+            // Check for IR camera (common labels)
+            this.hasIRCamera = this.availableCameras.some(camera => {
+                const label = camera.label.toLowerCase();
+                return label.includes('ir') || label.includes('infrared') || 
+                       label.includes('depth') || label.includes('windows hello');
+            });
+            
+            // If multiple cameras, add camera selector
+            if (this.availableCameras.length > 1) {
+                this.addCameraSelector();
+            }
+            
+            // Show IR mode button if IR camera detected
+            if (this.hasIRCamera) {
+                document.getElementById('irModeBtn').style.display = 'inline-block';
+            }
+            
+            return this.availableCameras;
+        } catch (error) {
+            console.error('Error detecting cameras:', error);
+            return [];
+        }
+    }
+    
+    addCameraSelector() {
+        // Check if selector already exists
+        if (document.getElementById('cameraSelector')) return;
+        
+        // Create regular camera selector
+        const selector = document.createElement('select');
+        selector.id = 'cameraSelector';
+        selector.className = 'camera-selector';
+        
+        this.availableCameras.forEach((camera, index) => {
+            const option = document.createElement('option');
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `Camera ${index + 1}`;
+            selector.appendChild(option);
+        });
+        
+        selector.addEventListener('change', (e) => {
+            this.selectedCameraId = e.target.value;
+            if (this.isScanning && !this.irMode) {
+                // Restart with new camera only if not in IR mode
+                this.stopScanning();
+                setTimeout(() => this.startScanning(), 500);
+            }
+        });
+        
+        // Create IR camera selector
+        const irSelector = document.createElement('select');
+        irSelector.id = 'irCameraSelector';
+        irSelector.className = 'camera-selector';
+        
+        // Add same cameras to IR selector
+        this.availableCameras.forEach((camera, index) => {
+            const option = document.createElement('option');
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `Camera ${index + 1}`;
+            
+            // Mark likely IR cameras
+            const label = camera.label.toLowerCase();
+            if (label.includes('ir') || label.includes('infrared') || 
+                label.includes('depth') || label.includes('windows hello')) {
+                option.textContent += ' (IR)';
+                // Set as default IR camera if found
+                if (!this.selectedIRCameraId) {
+                    this.selectedIRCameraId = camera.deviceId;
+                }
+            }
+            
+            irSelector.appendChild(option);
+        });
+        
+        irSelector.addEventListener('change', (e) => {
+            this.selectedIRCameraId = e.target.value;
+            if (this.isScanning && this.irMode) {
+                // Restart with new IR camera
+                this.stopScanning();
+                setTimeout(() => this.startScanning(), 500);
+            }
+        });
+        
+        // Add to controls
+        const controls = document.querySelector('.controls');
+        
+        // Regular camera selector
+        const selectorWrapper = document.createElement('div');
+        selectorWrapper.className = 'camera-selector-wrapper';
+        selectorWrapper.innerHTML = '<label>Camera: </label>';
+        selectorWrapper.appendChild(selector);
+        controls.insertBefore(selectorWrapper, controls.firstChild);
+        
+        // IR camera selector (initially hidden)
+        const irSelectorWrapper = document.createElement('div');
+        irSelectorWrapper.id = 'irCameraSelectorWrapper';
+        irSelectorWrapper.className = 'camera-selector-wrapper';
+        irSelectorWrapper.style.display = 'none';
+        irSelectorWrapper.innerHTML = '<label>IR Camera: </label>';
+        irSelectorWrapper.appendChild(irSelector);
+        controls.insertBefore(irSelectorWrapper, selectorWrapper.nextSibling);
+        
+        // Set defaults
+        this.selectedCameraId = this.availableCameras[0].deviceId;
+        if (!this.selectedIRCameraId) {
+            this.selectedIRCameraId = this.availableCameras[0].deviceId;
+        }
+        
+        // Set selector values
+        selector.value = this.selectedCameraId;
+        irSelector.value = this.selectedIRCameraId;
+    }
+    
     async startScanning() {
         if (this.isScanning) {
             this.stopScanning();
             return;
         }
         
+        // Detect cameras on first scan
+        if (this.availableCameras.length === 0) {
+            await this.detectCameras();
+        }
+        
         try {
             this.isScanning = true;
             document.getElementById('startBtn').textContent = 'Stop Scanning';
+            document.getElementById('startBtn').classList.remove('primary');
+            document.getElementById('startBtn').classList.add('secondary');
             document.getElementById('captureBtn').disabled = false;
             
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const constraints = {
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                }
+            };
+            
+            // Use appropriate camera based on mode
+            if (this.irMode && this.selectedIRCameraId) {
+                constraints.video.deviceId = { exact: this.selectedIRCameraId };
+            } else if (!this.irMode && this.selectedCameraId) {
+                constraints.video.deviceId = { exact: this.selectedCameraId };
+            }
+            
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
             this.videoElement.srcObject = stream;
             
             this.videoElement.onloadedmetadata = () => {
@@ -235,6 +390,7 @@ class DotProjector {
             };
             
             this.updateStatus('Scanning...', 'scanning');
+            document.getElementById('guidanceOverlay').style.opacity = '0.3';
         } catch (error) {
             console.error('Camera access error:', error);
             this.updateStatus('Camera access denied', 'error');
@@ -245,6 +401,8 @@ class DotProjector {
     stopScanning() {
         this.isScanning = false;
         document.getElementById('startBtn').textContent = 'Start Scanning';
+        document.getElementById('startBtn').classList.add('primary');
+        document.getElementById('startBtn').classList.remove('secondary');
         document.getElementById('captureBtn').disabled = true;
         
         if (this.videoElement.srcObject) {
@@ -253,6 +411,7 @@ class DotProjector {
         }
         
         this.updateStatus('Ready to Scan', '');
+        document.getElementById('guidanceOverlay').style.opacity = '0';
     }
     
     async detectHand() {
@@ -500,12 +659,20 @@ class DotProjector {
             );
             this.instancedDots.setMatrixAt(index, matrix);
             
-            // Color based on distance and hand features
-            const hue = (120 - distance * 2 + maxInfluence * 60) / 360;
-            const saturation = alignment * (0.5 + maxInfluence * 0.5);
-            const lightness = 0.3 + maxInfluence * 0.6;
-            
-            color.setHSL(hue, saturation, lightness);
+            // Color based on distance, hand features, and mode
+            if (this.irMode) {
+                // IR mode colors - purple/magenta spectrum
+                const intensity = 0.3 + maxInfluence * 0.7;
+                const redness = intensity * (0.8 + alignment * 0.2);
+                const blueness = intensity * (0.6 + distance / 50);
+                color.setRGB(redness, 0, blueness);
+            } else {
+                // Regular mode colors - green/cyan spectrum
+                const hue = (120 - distance * 2 + maxInfluence * 60) / 360;
+                const saturation = alignment * (0.5 + maxInfluence * 0.5);
+                const lightness = 0.3 + maxInfluence * 0.6;
+                color.setHSL(hue, saturation, lightness);
+            }
             this.instancedDots.setColorAt(index, color);
         });
         
@@ -813,118 +980,393 @@ class DotProjector {
         this.captureCanvas.width = this.videoElement.videoWidth;
         this.captureCanvas.height = this.videoElement.videoHeight;
         
-        // Create clean palm capture
-        this.createCleanPalmCapture();
-        
-        // Convert to blob and save
-        this.captureCanvas.toBlob((blob) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                const captureData = {
-                    id: Date.now(),
-                    image: reader.result,
-                    timestamp: new Date().toISOString(),
-                    metrics: {
-                        distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
-                        alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
-                    }
+        if (this.irMode) {
+            // Capture both regular and IR images when IR mode is on
+            this.captureDualMode();
+        } else {
+            // Single regular capture
+            this.createRegularCapture(this.captureCtx, this.captureCanvas.width, this.captureCanvas.height);
+            
+            // Convert to blob and save
+            this.captureCanvas.toBlob((blob) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const captureData = {
+                        id: Date.now(),
+                        image: reader.result,
+                        type: 'regular',
+                        timestamp: new Date().toISOString(),
+                        metrics: {
+                            distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
+                            alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
+                        }
+                    };
+                    
+                    this.captures.unshift(captureData);
+                    if (this.captures.length > 20) this.captures.pop();
+                    
+                    localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    this.showCaptureFlash();
+                    this.updateStatus('Captured successfully!', 'success');
+                    
+                    setTimeout(() => {
+                        this.updateStatus('Scanning...', 'scanning');
+                    }, 2000);
                 };
-                
-                this.captures.unshift(captureData);
-                if (this.captures.length > 20) this.captures.pop(); // Keep max 20 captures
-                
-                localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
-                this.showCaptureFlash();
-                this.updateStatus('Captured successfully!', 'success');
-                
-                setTimeout(() => {
-                    this.updateStatus('Scanning...', 'scanning');
-                }, 2000);
-            };
-            reader.readAsDataURL(blob);
-        });
+                reader.readAsDataURL(blob);
+            });
+        }
         
         this.isAutoCapturing = false;
         this.perfectAlignmentTime = 0;
     }
     
-    createCleanPalmCapture() {
-        const ctx = this.captureCtx;
+    toggleIRMode() {
+        this.irMode = !this.irMode;
+        const btn = document.getElementById('irModeBtn');
+        btn.textContent = `IR Mode: ${this.irMode ? 'ON' : 'OFF'}`;
+        btn.classList.toggle('active', this.irMode);
+        
+        // Show IR camera selector when IR mode is on
+        const irSelector = document.getElementById('irCameraSelectorWrapper');
+        irSelector.style.display = this.irMode ? 'flex' : 'none';
+        
+        if (this.irMode) {
+            // Change to IR visualization colors
+            this.handLines.material.color.setHex(0xff00ff); // Purple for IR
+            this.handPoints.material.uniforms.color.value.setHex(0xff00ff);
+            this.instancedDots.material.color.setHex(0x8800ff);
+            this.instancedDots.material.emissive.setHex(0x440088);
+            
+            // Apply filter only to the canvas, not the container
+            this.renderer.domElement.style.filter = 'hue-rotate(270deg) saturate(1.5)';
+            
+            // Switch to IR camera if scanning
+            if (this.isScanning) {
+                this.stopScanning();
+                setTimeout(() => this.startScanning(), 500);
+            }
+        } else {
+            // Reset to normal colors
+            this.handLines.material.color.setHex(0x00ff88);
+            this.handPoints.material.uniforms.color.value.setHex(0x00ff88);
+            this.instancedDots.material.color.setHex(0x00b366);
+            this.instancedDots.material.emissive.setHex(0x005933);
+            
+            // Remove filter
+            this.renderer.domElement.style.filter = 'none';
+            
+            // Switch back to regular camera if scanning
+            if (this.isScanning) {
+                this.stopScanning();
+                setTimeout(() => this.startScanning(), 500);
+            }
+        }
+    }
+    
+    captureDualMode() {
         const w = this.captureCanvas.width;
         const h = this.captureCanvas.height;
+        const timestamp = new Date().toISOString();
+        const id = Date.now();
+        const metrics = {
+            distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
+            alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
+        };
         
-        // Create off-screen canvas for masking
-        const maskCanvas = document.createElement('canvas');
-        maskCanvas.width = w;
-        maskCanvas.height = h;
-        const maskCtx = maskCanvas.getContext('2d');
-        
+        // First capture regular image
+        this.createRegularCapture(this.captureCtx, w, h);
+        this.captureCanvas.toBlob((regularBlob) => {
+            const regularReader = new FileReader();
+            regularReader.onloadend = () => {
+                const regularCapture = {
+                    id: id,
+                    image: regularReader.result,
+                    type: 'regular',
+                    timestamp: timestamp,
+                    metrics: metrics
+                };
+                
+                // Then capture IR image
+                this.createIRVeinCapture(this.captureCtx, w, h);
+                this.captureCanvas.toBlob((irBlob) => {
+                    const irReader = new FileReader();
+                    irReader.onloadend = () => {
+                        const irCapture = {
+                            id: id + 1,
+                            image: irReader.result,
+                            type: 'ir',
+                            timestamp: timestamp,
+                            metrics: metrics,
+                            pairedWith: id
+                        };
+                        
+                        // Save both captures
+                        this.captures.unshift(irCapture);
+                        this.captures.unshift(regularCapture);
+                        if (this.captures.length > 20) {
+                            this.captures.splice(20);
+                        }
+                        
+                        localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                        this.showCaptureFlash();
+                        this.updateStatus('Captured both regular and IR!', 'success');
+                        
+                        setTimeout(() => {
+                            this.updateStatus('Scanning...', 'scanning');
+                        }, 2000);
+                    };
+                    irReader.readAsDataURL(irBlob);
+                });
+            };
+            regularReader.readAsDataURL(regularBlob);
+        });
+    }
+    
+    createRegularCapture(ctx, w, h) {
         // Get palm bounds with padding for zoom
         const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
         
         // Calculate zoom factor to fill canvas nicely
         const zoomFactorX = w / palmBounds.width;
         const zoomFactorY = h / palmBounds.height;
-        const zoomFactor = Math.min(zoomFactorX, zoomFactorY) * 0.8; // 80% to leave some margin
+        const zoomFactor = Math.min(zoomFactorX, zoomFactorY) * 0.8;
         
         // Calculate translation to center the palm
         const translateX = (w - palmBounds.width * zoomFactor) / 2 - palmBounds.left * zoomFactor;
         const translateY = (h - palmBounds.height * zoomFactor) / 2 - palmBounds.top * zoomFactor;
         
-        // First, create a mask of the hand area
-        maskCtx.save();
-        maskCtx.translate(translateX, translateY);
-        maskCtx.scale(zoomFactor, zoomFactor);
-        
-        // Create generous hand mask
-        maskCtx.fillStyle = 'white';
-        maskCtx.beginPath();
-        this.createHandMask(maskCtx, this.palmData, w, h);
-        maskCtx.fill();
-        
-        // Apply gaussian blur effect to mask edges
-        maskCtx.filter = 'blur(20px)';
-        maskCtx.globalCompositeOperation = 'source-over';
-        maskCtx.drawImage(maskCanvas, 0, 0);
-        maskCtx.restore();
-        
-        // Draw background first
-        const gradient = ctx.createLinearGradient(0, 0, 0, h);
-        gradient.addColorStop(0, '#e8f5e9');
-        gradient.addColorStop(0.5, '#f0f4f0');
-        gradient.addColorStop(1, '#e0f2f1');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, w, h);
-        
-        // Apply the hand image with mask
+        // Draw the full video frame first
         ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.drawImage(maskCanvas, 0, 0);
-        ctx.globalCompositeOperation = 'source-in';
-        
-        // Draw the zoomed video frame only where mask is
         ctx.translate(translateX, translateY);
         ctx.scale(zoomFactor, zoomFactor);
         ctx.drawImage(this.videoElement, 0, 0, w, h);
         ctx.restore();
         
-        // Add edge softening
-        this.applyEdgeSoftening(ctx, w, h, palmBounds, zoomFactor, translateX, translateY);
+        // Apply portrait blur effect to background
+        this.applyPortraitBlur(ctx, w, h, palmBounds, zoomFactor, translateX, translateY);
         
-        // Add biometric overlay (adjusted for zoom)
+        // Add biometric overlay
         ctx.save();
         ctx.translate(translateX, translateY);
         ctx.scale(zoomFactor, zoomFactor);
         this.drawBiometricOverlay(ctx, this.palmData, w, h);
         ctx.restore();
         
-        // Add scan lines effect
+        // Add scan effects
+        this.addScanEffects(ctx, w, h, false);
+    }
+    
+    createIRVeinCapture(ctx, w, h) {
+        // Get palm bounds with padding for zoom
+        const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
+        
+        // Calculate zoom factor
+        const zoomFactorX = w / palmBounds.width;
+        const zoomFactorY = h / palmBounds.height;
+        const zoomFactor = Math.min(zoomFactorX, zoomFactorY) * 0.8;
+        
+        // Calculate translation to center the palm
+        const translateX = (w - palmBounds.width * zoomFactor) / 2 - palmBounds.left * zoomFactor;
+        const translateY = (h - palmBounds.height * zoomFactor) / 2 - palmBounds.top * zoomFactor;
+        
+        // Dark background for IR
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(0, 0, w, h);
+        
+        // Draw video in IR style (darkened)
         ctx.save();
+        ctx.translate(translateX, translateY);
+        ctx.scale(zoomFactor, zoomFactor);
+        
+        // Apply IR filter to video
+        ctx.filter = 'brightness(0.3) contrast(1.5)';
+        ctx.drawImage(this.videoElement, 0, 0, w, h);
+        ctx.filter = 'none';
+        
+        // Draw simulated vein patterns
+        this.drawVeinPattern(ctx, this.palmData, w, h);
+        
+        // Draw IR biometric overlay
+        this.drawIRBiometricOverlay(ctx, this.palmData, w, h);
+        
+        ctx.restore();
+        
+        // Apply IR portrait effect
+        this.applyIRPortraitEffect(ctx, w, h, palmBounds, zoomFactor, translateX, translateY);
+        
+        // Add IR scan effects
+        this.addScanEffects(ctx, w, h, true);
+    }
+    
+    // Removed createTightHandMask and createHandMask - no longer needed with portrait blur approach
+    
+    drawVeinPattern(ctx, landmarks, w, h) {
+        ctx.save();
+        ctx.strokeStyle = '#ff00ff';
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ff00ff';
+        
+        // Generate procedural vein paths
+        const palmCenter = this.calculatePalmCenter(landmarks);
+        
+        // Main veins from wrist to fingers
+        const fingerBases = [5, 9, 13, 17];
+        fingerBases.forEach((base, i) => {
+            ctx.beginPath();
+            ctx.moveTo(landmarks[0].x * w, landmarks[0].y * h);
+            
+            // Add some curvature
+            const cpx = (landmarks[0].x + landmarks[base].x) * w / 2 + (Math.random() - 0.5) * 20;
+            const cpy = (landmarks[0].y + landmarks[base].y) * h / 2 + (Math.random() - 0.5) * 20;
+            
+            ctx.quadraticCurveTo(cpx, cpy, landmarks[base].x * w, landmarks[base].y * h);
+            ctx.stroke();
+            
+            // Branch veins
+            for (let j = 0; j < 3; j++) {
+                ctx.beginPath();
+                const t = 0.3 + j * 0.2;
+                const px = landmarks[0].x * (1-t) + landmarks[base].x * t;
+                const py = landmarks[0].y * (1-t) + landmarks[base].y * t;
+                
+                ctx.moveTo(px * w, py * h);
+                ctx.lineTo(
+                    px * w + (Math.random() - 0.5) * 30,
+                    py * h + (Math.random() - 0.5) * 30
+                );
+                ctx.stroke();
+            }
+        });
+        
+        // Cross-connecting veins
+        ctx.globalAlpha = 0.3;
+        for (let i = 0; i < 5; i++) {
+            ctx.beginPath();
+            const start = fingerBases[Math.floor(Math.random() * fingerBases.length)];
+            const end = fingerBases[Math.floor(Math.random() * fingerBases.length)];
+            
+            ctx.moveTo(landmarks[start].x * w, landmarks[start].y * h);
+            ctx.lineTo(landmarks[end].x * w, landmarks[end].y * h);
+            ctx.stroke();
+        }
+        
+        ctx.restore();
+    }
+    
+    drawIRBiometricOverlay(ctx, landmarks, w, h) {
+        ctx.save();
+        
+        // Heat signature points
+        ctx.globalAlpha = 0.8;
+        landmarks.forEach((landmark, idx) => {
+            const x = landmark.x * w;
+            const y = landmark.y * h;
+            
+            // Create heat gradient
+            const gradient = ctx.createRadialGradient(x, y, 0, x, y, 15);
+            gradient.addColorStop(0, 'rgba(255, 0, 255, 0.8)');
+            gradient.addColorStop(0.5, 'rgba(255, 0, 128, 0.4)');
+            gradient.addColorStop(1, 'rgba(255, 0, 255, 0)');
+            
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(x, y, 15, 0, 2 * Math.PI);
+            ctx.fill();
+        });
+        
+        // IR markers
+        ctx.strokeStyle = '#ff00ff';
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.6;
+        ctx.font = '10px monospace';
+        ctx.fillStyle = '#ff00ff';
+        
+        // Add temperature readings
+        const temps = ['36.2°C', '36.5°C', '36.3°C', '36.4°C', '36.1°C'];
+        [0, 4, 8, 12, 16].forEach((idx, i) => {
+            const x = landmarks[idx].x * w;
+            const y = landmarks[idx].y * h;
+            ctx.fillText(temps[i], x + 10, y - 10);
+        });
+        
+        ctx.restore();
+    }
+    
+    applyPortraitBlur(ctx, w, h, palmBounds, zoomFactor, translateX, translateY) {
+        ctx.save();
+        
+        // Create radial gradient from palm center
+        const centerX = translateX + (palmBounds.centerX * zoomFactor);
+        const centerY = translateY + (palmBounds.centerY * zoomFactor);
+        const radius = palmBounds.radius * zoomFactor * 1.5;
+        
+        // Apply vignette/blur effect
+        const gradient = ctx.createRadialGradient(
+            centerX, centerY, radius * 0.5,
+            centerX, centerY, radius * 2
+        );
+        
+        gradient.addColorStop(0, 'rgba(240, 244, 243, 0)');
+        gradient.addColorStop(0.5, 'rgba(240, 244, 243, 0.3)');
+        gradient.addColorStop(0.8, 'rgba(240, 244, 243, 0.7)');
+        gradient.addColorStop(1, 'rgba(240, 244, 243, 0.95)');
+        
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, w, h);
+        
+        // Add soft focus effect around edges
+        ctx.globalCompositeOperation = 'multiply';
+        const edgeGradient = ctx.createRadialGradient(
+            centerX, centerY, radius * 0.7,
+            centerX, centerY, radius * 2.5
+        );
+        
+        edgeGradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        edgeGradient.addColorStop(0.6, 'rgba(255, 255, 255, 1)');
+        edgeGradient.addColorStop(1, 'rgba(200, 200, 200, 0.8)');
+        
+        ctx.fillStyle = edgeGradient;
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.restore();
+    }
+    
+    applyIRPortraitEffect(ctx, w, h, palmBounds, zoomFactor, translateX, translateY) {
+        ctx.save();
+        
+        // Create radial gradient from palm center
+        const centerX = translateX + (palmBounds.centerX * zoomFactor);
+        const centerY = translateY + (palmBounds.centerY * zoomFactor);
+        const radius = palmBounds.radius * zoomFactor * 1.5;
+        
+        // Apply IR vignette effect
+        const gradient = ctx.createRadialGradient(
+            centerX, centerY, radius * 0.5,
+            centerX, centerY, radius * 2
+        );
+        
+        gradient.addColorStop(0, 'rgba(10, 10, 10, 0)');
+        gradient.addColorStop(0.5, 'rgba(10, 10, 10, 0.3)');
+        gradient.addColorStop(0.8, 'rgba(10, 10, 10, 0.7)');
+        gradient.addColorStop(1, 'rgba(10, 10, 10, 0.95)');
+        
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.restore();
+    }
+    
+    addScanEffects(ctx, w, h, isIR) {
+        ctx.save();
+        
+        // Scan lines
         ctx.globalAlpha = 0.1;
-        ctx.strokeStyle = '#00ff88';
+        ctx.strokeStyle = isIR ? '#ff00ff' : '#00ff88';
         ctx.lineWidth = 1;
         
-        // Horizontal scan lines
         for (let y = 0; y < h; y += 15) {
             ctx.beginPath();
             ctx.moveTo(0, y);
@@ -932,98 +1374,43 @@ class DotProjector {
             ctx.stroke();
         }
         
-        // Add biometric frame
+        // Frame
         ctx.globalAlpha = 0.3;
-        ctx.strokeStyle = '#00ff88';
+        ctx.strokeStyle = isIR ? '#ff00ff' : '#00ff88';
         ctx.lineWidth = 2;
         ctx.strokeRect(20, 20, w - 40, h - 40);
         
+        // Mode indicator and data
+        ctx.fillStyle = isIR ? '#ff00ff' : '#00ff88';
+        ctx.font = 'bold 12px monospace';
+        ctx.globalAlpha = 0.8;
+        
+        if (isIR) {
+            ctx.shadowBlur = 5;
+            ctx.shadowColor = '#ff00ff';
+            ctx.fillText('IR VEIN SCAN', 30, 40);
+            
+            // Temperature reading
+            const temp = (36.5 + Math.random() * 0.8).toFixed(1);
+            ctx.fillText(`TEMP: ${temp}°C`, 30, 60);
+            ctx.fillText('VEIN PATTERN: DETECTED', 30, 80);
+            ctx.fillText('BLOOD FLOW: NORMAL', 30, 100);
+            
+            // IR wavelength indicator
+            ctx.font = '10px monospace';
+            ctx.globalAlpha = 0.6;
+            ctx.fillText('850nm INFRARED', w - 130, 40);
+        } else {
+            ctx.fillText('VISIBLE LIGHT SCAN', 30, 40);
+            ctx.font = '10px monospace';
+            ctx.globalAlpha = 0.6;
+            ctx.fillText('RGB CAPTURE', w - 100, 40);
+        }
+        
         ctx.restore();
     }
     
-    createHandMask(ctx, landmarks, w, h) {
-        // Create a generous outline that includes entire hand with padding
-        const padding = 60;
-        
-        // Start with wrist
-        ctx.moveTo(landmarks[0].x * w - padding, landmarks[0].y * h + padding);
-        
-        // Thumb outline
-        ctx.quadraticCurveTo(
-            landmarks[1].x * w - padding * 1.5, landmarks[1].y * h,
-            landmarks[4].x * w - padding, landmarks[4].y * h - padding * 1.2
-        );
-        
-        // Bridge to index finger
-        ctx.quadraticCurveTo(
-            landmarks[3].x * w, landmarks[3].y * h - padding * 1.5,
-            landmarks[8].x * w - padding * 0.5, landmarks[8].y * h - padding * 1.2
-        );
-        
-        // Top of fingers
-        ctx.quadraticCurveTo(
-            landmarks[12].x * w, landmarks[12].y * h - padding * 1.5,
-            landmarks[16].x * w + padding * 0.5, landmarks[16].y * h - padding * 1.2
-        );
-        
-        // Pinky side
-        ctx.quadraticCurveTo(
-            landmarks[20].x * w + padding * 1.2, landmarks[20].y * h - padding,
-            landmarks[20].x * w + padding * 1.5, landmarks[20].y * h
-        );
-        
-        // Down pinky side
-        ctx.quadraticCurveTo(
-            landmarks[19].x * w + padding * 1.5, landmarks[19].y * h + padding * 0.5,
-            landmarks[17].x * w + padding, landmarks[17].y * h + padding
-        );
-        
-        // Back to wrist
-        ctx.quadraticCurveTo(
-            landmarks[0].x * w, landmarks[0].y * h + padding * 1.5,
-            landmarks[0].x * w - padding, landmarks[0].y * h + padding
-        );
-        
-        ctx.closePath();
-    }
-    
-    applyEdgeSoftening(ctx, w, h, _, zoomFactor, translateX, translateY) {
-        // Apply subtle edge gradient to blend with background
-        ctx.save();
-        ctx.globalCompositeOperation = 'destination-out';
-        
-        // Create edge gradient
-        const edgeGradient = ctx.createRadialGradient(
-            w/2, h/2, Math.min(w, h) * 0.3,
-            w/2, h/2, Math.min(w, h) * 0.5
-        );
-        edgeGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        edgeGradient.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
-        edgeGradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
-        
-        ctx.fillStyle = edgeGradient;
-        ctx.fillRect(0, 0, w, h);
-        
-        ctx.restore();
-        
-        // Add subtle shadow around hand
-        ctx.save();
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-        ctx.shadowBlur = 30;
-        ctx.shadowOffsetX = 5;
-        ctx.shadowOffsetY = 5;
-        
-        // Draw shadow shape
-        ctx.translate(translateX, translateY);
-        ctx.scale(zoomFactor, zoomFactor);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
-        ctx.beginPath();
-        this.createHandMask(ctx, this.palmData, w, h);
-        ctx.fill();
-        
-        ctx.restore();
-    }
+    // Removed applyEdgeSoftening - no longer needed with portrait blur approach
     
     getPalmBounds(landmarks, w, h, padding) {
         let minX = 1, maxX = 0, minY = 1, maxY = 0;
@@ -1226,13 +1613,21 @@ class DotProjector {
                 const item = document.createElement('div');
                 item.className = 'capture-item';
                 
+                // Add IR class if it's an IR capture
+                if (capture.type === 'ir') {
+                    item.classList.add('ir-capture');
+                }
+                
                 const date = new Date(capture.timestamp);
                 const timeStr = date.toLocaleString();
+                
+                // Add type indicator
+                const typeLabel = capture.type === 'ir' ? '<span style="color: #ff00ff; font-weight: bold;">[IR]</span> ' : '';
                 
                 item.innerHTML = `
                     <img src="${capture.image}" alt="Palm capture">
                     <div class="capture-info">
-                        <div class="capture-time">${timeStr}</div>
+                        <div class="capture-time">${typeLabel}${timeStr}</div>
                         <div class="capture-metrics">
                             Distance: ${capture.metrics.distance}cm | 
                             Alignment: ${capture.metrics.alignment}%
