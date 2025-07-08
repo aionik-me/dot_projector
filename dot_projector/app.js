@@ -782,7 +782,7 @@ class DotProjector {
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
         } else if (!fingersExtended) {
-            this.updateStatus('Spread your fingers wide', 'warning');
+            this.updateStatus('Extend your fingers', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
         } else if (distance < 8) {
@@ -819,9 +819,10 @@ class DotProjector {
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
             } else if (!isHandFlat) {
-                // Hand flatness is a suggestion, not a requirement
-                this.updateStatus('Almost there! Flatten hand', 'success');
-                this.handlePerfectAlignment(); // Still allow capture
+                // Hand must be open for proper palm capture
+                this.updateStatus('Open your palm fully', 'warning');
+                this.perfectAlignmentTime = 0;
+                this.isAutoCapturing = false;
             } else {
                 this.updateStatus('Perfect! Hold steady', 'success');
                 this.handlePerfectAlignment();
@@ -929,7 +930,8 @@ class DotProjector {
     }
     
     checkFingerExtension(landmarks) {
-        // Check if fingers are properly extended (not curled)
+        // This now checks for reasonable finger extension (not fully spread, but not closed)
+        // Combined with checkHandFlatness for complete palm validation
         const fingerGroups = [
             [5, 6, 7, 8], // Index
             [9, 10, 11, 12], // Middle
@@ -960,47 +962,81 @@ class DotProjector {
             const mag2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y);
             const alignment = dot / (mag1 * mag2);
             
-            // Finger is extended if alignment is good
-            if (alignment > 0.7) {
+            // Finger is extended if alignment is good (slightly raised threshold)
+            // 0.6 allows natural extension without requiring perfectly straight fingers
+            if (alignment > 0.6) {
                 extendedCount++;
             }
         });
         
-        // Require at least 3 fingers to be extended
+        // Require at least 3 fingers to be reasonably extended
         return extendedCount >= 3;
     }
     
     checkHandFlatness(landmarks) {
-        // Check if hand is relatively flat by comparing Z-coordinates
-        const fingerTips = [4, 8, 12, 16, 20];
-        const palmBase = landmarks[0].z;
+        // Check if palm is open (not a fist) and reasonably flat
+        // We need to ensure palm is visible for biometric capture
         
-        let maxDeviation = 0;
-        fingerTips.forEach(idx => {
-            const deviation = Math.abs(landmarks[idx].z - palmBase);
-            maxDeviation = Math.max(maxDeviation, deviation);
+        // 1. Check if fingers are not curled into palm (fist detection)
+        const palmCenter = this.calculatePalmCenter(landmarks);
+        const fingerTips = [4, 8, 12, 16, 20];
+        const fingerMids = [3, 6, 10, 14, 18];
+        
+        let openFingers = 0;
+        fingerTips.forEach((tipIdx, i) => {
+            const tip = landmarks[tipIdx];
+            const mid = landmarks[fingerMids[i]];
+            
+            // Check if fingertip is reasonably far from palm center
+            const tipToPalmDist = Math.sqrt(
+                Math.pow(tip.x - palmCenter.x, 2) + 
+                Math.pow(tip.y - palmCenter.y, 2)
+            );
+            
+            // Check if finger is not severely bent
+            const tipToMidDist = Math.sqrt(
+                Math.pow(tip.x - mid.x, 2) + 
+                Math.pow(tip.y - mid.y, 2)
+            );
+            
+            // Finger is open if tip is far from palm and reasonably straight
+            // Increased thresholds to prevent partially closed fingers
+            if (tipToPalmDist > 0.18 && tipToMidDist > 0.07) {
+                openFingers++;
+            }
         });
         
-        // Hand is flat if fingertips are within 0.15 Z-units of palm (much more lenient)
-        // MediaPipe Z values are typically small, so 0.15 allows for natural hand curvature
-        return maxDeviation < 0.15;
+        // 2. Check Z-coordinate flatness (but more lenient)
+        const palmBase = landmarks[0].z;
+        let maxZDeviation = 0;
+        fingerTips.forEach(idx => {
+            const deviation = Math.abs(landmarks[idx].z - palmBase);
+            maxZDeviation = Math.max(maxZDeviation, deviation);
+        });
+        
+        // Require at least 4 fingers open (not just 3) and reasonable flatness
+        // This ensures palm is properly open, not partially closed
+        return openFingers >= 4 && maxZDeviation < 0.12;
     }
     
     checkPalmOrientation(landmarks) {
         // Check if palm is facing camera using normal vector
         const normal = this.calculatePalmNormal(landmarks);
         
-        // Palm should be facing mostly toward camera
-        // Normal.z should be negative (pointing toward camera)
-        // Using -0.5 allows up to ~60 degrees tilt, which is more natural
-        return normal.z < -0.5;
+        // For proper palm orientation, the absolute value of normal.z should be high
+        // This works for both left and right hands
+        return Math.abs(normal.z) > 0.5;
     }
     
     checkHandRotation(landmarks) {
         // Check hand rotation by comparing middle finger to wrist alignment
         const wrist = landmarks[0];
         const middleBase = landmarks[9];
-        const middleTip = landmarks[12];
+        const index = landmarks[5];
+        const pinky = landmarks[17];
+        
+        // Detect if this is a left or right hand
+        const isLeftHand = index.x > pinky.x;
         
         // Vector from wrist to middle finger base
         const baseVector = {
@@ -1014,15 +1050,25 @@ class DotProjector {
         // Calculate angle between vectors
         const dot = baseVector.x * verticalVector.x + baseVector.y * verticalVector.y;
         const det = baseVector.x * verticalVector.y - baseVector.y * verticalVector.x;
-        const angle = Math.atan2(det, dot) * (180 / Math.PI);
+        let angle = Math.atan2(det, dot) * (180 / Math.PI);
         
-        return angle; // Returns rotation in degrees (positive = clockwise)
+        // For left hands, we need to adjust what's considered "straight"
+        // Left hands naturally have middle finger pointing slightly left when straight
+        if (isLeftHand) {
+            // Adjust the expected angle for left hands
+            angle = -angle; // Flip the angle for left hands
+        }
+        
+        return angle; // Returns rotation in degrees (positive = needs clockwise rotation)
     }
     
     calculatePalmNormal(landmarks) {
         const wrist = landmarks[0];
         const index = landmarks[5];
         const pinky = landmarks[17];
+        
+        // Detect if this is a left or right hand
+        const isLeftHand = index.x > pinky.x;
         
         const v1 = {
             x: index.x - wrist.x,
@@ -1036,11 +1082,23 @@ class DotProjector {
             z: pinky.z - wrist.z
         };
         
-        const normal = {
-            x: v1.y * v2.z - v1.z * v2.y,
-            y: v1.z * v2.x - v1.x * v2.z,
-            z: v1.x * v2.y - v1.y * v2.x
-        };
+        // Adjust cross product order based on hand type
+        let normal;
+        if (isLeftHand) {
+            // Left hand: reverse cross product
+            normal = {
+                x: v2.y * v1.z - v2.z * v1.y,
+                y: v2.z * v1.x - v2.x * v1.z,
+                z: v2.x * v1.y - v2.y * v1.x
+            };
+        } else {
+            // Right hand: normal cross product
+            normal = {
+                x: v1.y * v2.z - v1.z * v2.y,
+                y: v1.z * v2.x - v1.x * v2.z,
+                z: v1.x * v2.y - v1.y * v2.x
+            };
+        }
         
         const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
         
