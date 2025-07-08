@@ -1,3 +1,28 @@
+/**
+ * DOT Projector - Palm Biometric Scanner Simulation
+ * 
+ * CAPTURE MODES:
+ * 1. Regular Mode: Single RGB capture from main camera
+ * 2. IR Mode ON: Dual capture sequence (IR → RGB)
+ * 
+ * CAPTURE SEQUENCE (IR Mode):
+ * 1. Switch to IR camera
+ * 2. Capture IR image with vein patterns
+ * 3. Switch to RGB camera
+ * 4. Capture regular RGB image
+ * 5. Return to original camera
+ * 
+ * CUSTOMIZATION:
+ * - Camera switching delay: Adjust delay in captureDualMode() (default: 100ms)
+ * - Capture distance: Modify distance thresholds in updatePalmVisualization()
+ * - Grid size: Change gridSize in createDotPattern() (default: 45)
+ * - Alignment sensitivity: Adjust margin in calculateAlignment() (default: 0.03)
+ * 
+ * CAMERA CONFIGURATION:
+ * - Regular camera: Selected via top dropdown
+ * - IR camera: Selected via second dropdown (appears when IR mode is ON)
+ * - Auto-detection: Looks for 'ir', 'infrared', 'depth', or 'windows hello' in camera names
+ */
 class DotProjector {
     constructor() {
         this.canvas = document.getElementById('dotCanvas');
@@ -83,7 +108,8 @@ class DotProjector {
             emissiveIntensity: 0.5
         });
         
-        const gridSize = 30;
+        // Expanded grid size for wider capture area
+        const gridSize = 45; // Increased from 30
         const spacing = 2.5;
         let count = 0;
         
@@ -171,7 +197,11 @@ class DotProjector {
                 void main() {
                     vColor = vec3(0.0, 1.0, 0.5);
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                    gl_PointSize = size * (300.0 / -mvPosition.z);
+                    // Better distance-based scaling
+                    float distance = length(mvPosition.xyz);
+                    gl_PointSize = size * (200.0 / distance);
+                    // Clamp size to prevent overly large points
+                    gl_PointSize = min(gl_PointSize, 20.0);
                     gl_Position = projectionMatrix * mvPosition;
                 }
             `,
@@ -182,8 +212,9 @@ class DotProjector {
                     float r = dot(xy, xy);
                     if (r > 0.25) discard;
                     
-                    float intensity = 1.0 - r * 4.0;
-                    gl_FragColor = vec4(vColor * intensity, intensity);
+                    // Sharper edge for cleaner appearance
+                    float intensity = smoothstep(0.25, 0.15, r);
+                    gl_FragColor = vec4(vColor * intensity, intensity * 0.9);
                 }
             `,
             transparent: true,
@@ -374,10 +405,9 @@ class DotProjector {
                 }
             };
             
-            // Use appropriate camera based on mode
-            if (this.irMode && this.selectedIRCameraId) {
-                constraints.video.deviceId = { exact: this.selectedIRCameraId };
-            } else if (!this.irMode && this.selectedCameraId) {
+            // Always use regular camera for live preview
+            // We'll only switch to IR camera during actual capture if needed
+            if (this.selectedCameraId) {
                 constraints.video.deviceId = { exact: this.selectedCameraId };
             }
             
@@ -478,13 +508,16 @@ class DotProjector {
             pointPositions[i + 1] = -(landmark.y - 0.5) * scale;
             pointPositions[i + 2] = -landmark.z * 100;
             
-            // Size based on importance
+            // Size based on importance and distance
+            const distance = Math.abs(landmark.z * 100);
+            const distanceScale = Math.max(0.5, Math.min(1.5, 1.0 - distance / 50));
+            
             if ([4, 8, 12, 16, 20].includes(idx)) {
-                pointSizes[idx] = 8; // Fingertips
+                pointSizes[idx] = 6 * distanceScale; // Fingertips
             } else if (idx === 0) {
-                pointSizes[idx] = 10; // Wrist
+                pointSizes[idx] = 8 * distanceScale; // Wrist
             } else {
-                pointSizes[idx] = 5; // Other points
+                pointSizes[idx] = 4 * distanceScale; // Other points
             }
         });
         
@@ -629,7 +662,7 @@ class DotProjector {
                     Math.pow(dotPos.x - landmarkX, 2) + 
                     Math.pow(dotPos.y - landmarkY, 2)
                 );
-                const influence = Math.max(0, 1 - dist / 15);
+                const influence = Math.max(0, 1 - dist / 20); // Increased influence radius
                 maxInfluence = Math.max(maxInfluence, influence);
             });
             
@@ -699,19 +732,19 @@ class DotProjector {
             this.updateStatus('Extend your fingers', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance < 15) {
+        } else if (distance < 10) {
             this.updateStatus('Move hand further away', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance > 35) {
+        } else if (distance > 40) {
             this.updateStatus('Move hand closer', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (alignment < 0.4) { // Much more lenient
+        } else if (alignment < 0.3) { // More lenient alignment
             this.updateStatus('Center your palm', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance >= 15 && distance <= 35 && alignment >= 0.4 && fingersExtended) {
+        } else if (distance >= 10 && distance <= 40 && alignment >= 0.3 && fingersExtended) {
             this.updateStatus('Perfect! Hold steady', 'success');
             this.handlePerfectAlignment();
         }
@@ -737,7 +770,7 @@ class DotProjector {
     
     calculateAlignment(landmarks) {
         // Check if all landmarks are within frame bounds
-        const margin = 0.05; // 5% margin from edges - more lenient
+        const margin = 0.03; // 3% margin from edges - even more lenient
         let allVisible = true;
         
         // Check critical landmarks only
@@ -754,7 +787,7 @@ class DotProjector {
         
         // Calculate palm area to ensure hand is properly sized
         const palmArea = this.calculatePalmArea(landmarks);
-        const minArea = 0.03; // Much more lenient minimum
+        const minArea = 0.02; // Very lenient minimum for closer hands
         const maxArea = 0.3; // Allow larger hands
         const areaScore = palmArea < minArea ? palmArea / minArea : 
                          palmArea > maxArea ? 0.7 : 1;
@@ -985,6 +1018,8 @@ class DotProjector {
             this.captureDualMode();
         } else {
             // Single regular capture
+            this.showEnhancedCaptureFeedback();
+            
             this.createRegularCapture(this.captureCtx, this.captureCanvas.width, this.captureCanvas.height);
             
             // Convert to blob and save
@@ -1006,7 +1041,6 @@ class DotProjector {
                     if (this.captures.length > 20) this.captures.pop();
                     
                     localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
-                    this.showCaptureFlash();
                     this.updateStatus('Captured successfully!', 'success');
                     
                     setTimeout(() => {
@@ -1064,7 +1098,22 @@ class DotProjector {
         }
     }
     
-    captureDualMode() {
+    /**
+     * Captures both IR and RGB images in the proper sequence.
+     * 
+     * CAPTURE FLOW:
+     * 1. Switch to IR camera and capture IR image
+     * 2. Immediately switch to RGB camera and capture regular image
+     * 3. Switch back to the camera that was active before capture
+     * 
+     * This sequence ensures IR illumination doesn't interfere with RGB capture.
+     * 
+     * To customize the capture sequence:
+     * - Modify the camera switching order in this method
+     * - Adjust the delay between captures (currently 100ms)
+     * - Change which camera to return to after capture
+     */
+    async captureDualMode() {
         const w = this.captureCanvas.width;
         const h = this.captureCanvas.height;
         const timestamp = new Date().toISOString();
@@ -1074,52 +1123,118 @@ class DotProjector {
             alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
         };
         
-        // First capture regular image
-        this.createRegularCapture(this.captureCtx, w, h);
-        this.captureCanvas.toBlob((regularBlob) => {
+        // Check if we need to switch cameras
+        const needsCameraSwitch = this.selectedIRCameraId !== this.selectedCameraId;
+        
+        // Show enhanced capture feedback
+        this.showEnhancedCaptureFeedback();
+        
+        try {
+            let irBlob, regularBlob;
+            
+            if (needsCameraSwitch) {
+                // Different cameras - do the switch sequence
+                // Step 1: Switch to IR camera and capture
+                await this.switchToCamera(this.selectedIRCameraId);
+                await new Promise(resolve => setTimeout(resolve, 100)); // Allow camera to stabilize
+                
+                // Capture IR image
+                this.createIRVeinCapture(this.captureCtx, w, h);
+                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                
+                // Step 2: Switch back to RGB camera and capture
+                await this.switchToCamera(this.selectedCameraId);
+                await new Promise(resolve => setTimeout(resolve, 100)); // Allow camera to stabilize
+                
+                // Capture regular image
+                this.createRegularCapture(this.captureCtx, w, h);
+                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+            } else {
+                // Same camera - just capture both modes without switching
+                // Capture IR image first
+                this.createIRVeinCapture(this.captureCtx, w, h);
+                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                
+                // Small delay to simulate mode switch
+                await new Promise(resolve => setTimeout(resolve, 50));
+                
+                // Capture regular image
+                this.createRegularCapture(this.captureCtx, w, h);
+                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+            }
+            
+            // Process and save both captures
+            const irReader = new FileReader();
             const regularReader = new FileReader();
-            regularReader.onloadend = () => {
-                const regularCapture = {
+            
+            irReader.onloadend = () => {
+                const irCapture = {
                     id: id,
-                    image: regularReader.result,
-                    type: 'regular',
+                    image: irReader.result,
+                    type: 'ir',
                     timestamp: timestamp,
-                    metrics: metrics
+                    metrics: metrics,
+                    pairedWith: id + 1
                 };
                 
-                // Then capture IR image
-                this.createIRVeinCapture(this.captureCtx, w, h);
-                this.captureCanvas.toBlob((irBlob) => {
-                    const irReader = new FileReader();
-                    irReader.onloadend = () => {
-                        const irCapture = {
-                            id: id + 1,
-                            image: irReader.result,
-                            type: 'ir',
-                            timestamp: timestamp,
-                            metrics: metrics,
-                            pairedWith: id
-                        };
-                        
-                        // Save both captures
-                        this.captures.unshift(irCapture);
-                        this.captures.unshift(regularCapture);
-                        if (this.captures.length > 20) {
-                            this.captures.splice(20);
-                        }
-                        
-                        localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
-                        this.showCaptureFlash();
-                        this.updateStatus('Captured both regular and IR!', 'success');
-                        
-                        setTimeout(() => {
-                            this.updateStatus('Scanning...', 'scanning');
-                        }, 2000);
+                regularReader.onloadend = () => {
+                    const regularCapture = {
+                        id: id + 1,
+                        image: regularReader.result,
+                        type: 'regular',
+                        timestamp: timestamp,
+                        metrics: metrics,
+                        pairedWith: id
                     };
-                    irReader.readAsDataURL(irBlob);
-                });
+                    
+                    // Save both captures
+                    this.captures.unshift(regularCapture);
+                    this.captures.unshift(irCapture);
+                    if (this.captures.length > 20) {
+                        this.captures.splice(20);
+                    }
+                    
+                    localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    this.updateStatus('Captured IR + RGB successfully!', 'success');
+                    
+                    setTimeout(() => {
+                        this.updateStatus('Scanning...', 'scanning');
+                    }, 2000);
+                };
+                regularReader.readAsDataURL(regularBlob);
             };
-            regularReader.readAsDataURL(regularBlob);
+            irReader.readAsDataURL(irBlob);
+            
+        } catch (error) {
+            console.error('Dual capture error:', error);
+            this.updateStatus('Capture failed', 'error');
+        }
+    }
+    
+    /**
+     * Switches to a specific camera by device ID
+     * @param {string} deviceId - The device ID of the camera to switch to
+     */
+    async switchToCamera(deviceId) {
+        if (this.videoElement.srcObject) {
+            this.videoElement.srcObject.getTracks().forEach(track => track.stop());
+        }
+        
+        const constraints = {
+            video: {
+                deviceId: { exact: deviceId },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            }
+        };
+        
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        this.videoElement.srcObject = stream;
+        await new Promise(resolve => {
+            this.videoElement.onloadedmetadata = () => {
+                this.videoElement.play();
+                resolve();
+            };
         });
     }
     
@@ -1598,6 +1713,51 @@ class DotProjector {
         flash.className = 'capture-flash';
         document.querySelector('.dot-projector-container').appendChild(flash);
         setTimeout(() => flash.remove(), 300);
+    }
+    
+    /**
+     * Shows enhanced visual feedback when capturing
+     * Includes countdown, flash, and sound effect
+     */
+    showEnhancedCaptureFeedback() {
+        // Create capture overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'capture-overlay';
+        overlay.innerHTML = `
+            <div class="capture-animation">
+                <div class="capture-ring"></div>
+                <div class="capture-text">CAPTURING</div>
+            </div>
+        `;
+        document.querySelector('.dot-projector-container').appendChild(overlay);
+        
+        // Camera shutter sound effect (using Web Audio API)
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.value = 1000;
+            gainNode.gain.value = 0.1;
+            
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.1);
+        } catch (e) {
+            // Silent fail if audio not available
+        }
+        
+        // Flash effect
+        setTimeout(() => {
+            this.showCaptureFlash();
+        }, 200);
+        
+        // Remove overlay
+        setTimeout(() => {
+            overlay.remove();
+        }, 1000);
     }
     
     showGallery() {
