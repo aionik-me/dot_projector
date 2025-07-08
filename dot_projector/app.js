@@ -16,6 +16,8 @@ class DotProjector {
         
         this.hands = null;
         this.videoElement = document.getElementById('inputVideo');
+        this.captureCanvas = document.getElementById('captureCanvas');
+        this.captureCtx = this.captureCanvas.getContext('2d');
         
         // Hand visualization properties
         this.handConnections = [
@@ -26,6 +28,12 @@ class DotProjector {
             [13, 17], [17, 18], [18, 19], [19, 20], // Pinky
             [0, 17] // Palm base
         ];
+        
+        // Capture properties
+        this.captures = JSON.parse(localStorage.getItem('palmCaptures') || '[]');
+        this.isAutoCapturing = false;
+        this.perfectAlignmentTime = 0;
+        this.autoCaptureDelay = 3000; // 3 seconds of perfect alignment
         
         this.init();
     }
@@ -99,6 +107,8 @@ class DotProjector {
     setupEventListeners() {
         document.getElementById('startBtn').addEventListener('click', () => this.startScanning());
         document.getElementById('captureBtn').addEventListener('click', () => this.capture());
+        document.getElementById('galleryBtn').addEventListener('click', () => this.showGallery());
+        document.getElementById('closeGalleryBtn').addEventListener('click', () => this.hideGallery());
         
         window.addEventListener('resize', () => {
             this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
@@ -493,14 +503,19 @@ class DotProjector {
         
         if (!fullyVisible) {
             this.updateStatus('Show entire hand in frame', 'error');
+            this.perfectAlignmentTime = 0;
         } else if (distance >= 25 && distance <= 35 && alignment > 0.6) {
             this.updateStatus('Perfect! Hold steady', 'success');
+            this.handlePerfectAlignment();
         } else if (distance < 25) {
             this.updateStatus('Move hand further away', 'warning');
+            this.perfectAlignmentTime = 0;
         } else if (distance > 35) {
             this.updateStatus('Move hand closer', 'warning');
+            this.perfectAlignmentTime = 0;
         } else if (alignment < 0.6) {
             this.updateStatus('Spread fingers naturally', 'warning');
+            this.perfectAlignmentTime = 0;
         }
     }
     
@@ -673,17 +688,172 @@ class DotProjector {
         statusText.textContent = text;
     }
     
+    handlePerfectAlignment() {
+        if (!this.isAutoCapturing) {
+            this.perfectAlignmentTime = Date.now();
+            this.isAutoCapturing = true;
+        }
+        
+        const elapsed = Date.now() - this.perfectAlignmentTime;
+        const countdown = Math.ceil((this.autoCaptureDelay - elapsed) / 1000);
+        
+        if (countdown > 0) {
+            this.showCountdown(countdown);
+        }
+        
+        if (elapsed >= this.autoCaptureDelay) {
+            this.capture();
+            this.isAutoCapturing = false;
+        }
+    }
+    
+    showCountdown(seconds) {
+        const existing = document.querySelector('.auto-capture-indicator');
+        if (existing) existing.remove();
+        
+        const indicator = document.createElement('div');
+        indicator.className = 'auto-capture-indicator';
+        indicator.textContent = seconds;
+        document.querySelector('.dot-projector-container').appendChild(indicator);
+        
+        setTimeout(() => indicator.remove(), 900);
+    }
+    
     capture() {
-        if (!this.palmData) {
+        if (!this.palmData || !this.videoElement.srcObject) {
             this.updateStatus('No palm detected', 'error');
             return;
         }
         
-        this.updateStatus('Captured!', 'success');
+        // Setup capture canvas
+        this.captureCanvas.width = this.videoElement.videoWidth;
+        this.captureCanvas.height = this.videoElement.videoHeight;
         
-        setTimeout(() => {
-            this.updateStatus('Scanning...', 'scanning');
-        }, 2000);
+        // Draw video frame
+        this.captureCtx.drawImage(this.videoElement, 0, 0);
+        
+        // Draw palm overlay
+        this.drawPalmOverlay(this.captureCtx, this.palmData);
+        
+        // Convert to blob and save
+        this.captureCanvas.toBlob((blob) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const captureData = {
+                    id: Date.now(),
+                    image: reader.result,
+                    timestamp: new Date().toISOString(),
+                    metrics: {
+                        distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
+                        alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
+                    }
+                };
+                
+                this.captures.unshift(captureData);
+                if (this.captures.length > 20) this.captures.pop(); // Keep max 20 captures
+                
+                localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                this.showCaptureFlash();
+                this.updateStatus('Captured successfully!', 'success');
+                
+                setTimeout(() => {
+                    this.updateStatus('Scanning...', 'scanning');
+                }, 2000);
+            };
+            reader.readAsDataURL(blob);
+        });
+        
+        this.isAutoCapturing = false;
+        this.perfectAlignmentTime = 0;
+    }
+    
+    drawPalmOverlay(ctx, landmarks) {
+        const w = this.captureCanvas.width;
+        const h = this.captureCanvas.height;
+        
+        // Draw semi-transparent overlay
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        
+        // Draw palm outline
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#00ff88';
+        
+        ctx.beginPath();
+        ctx.moveTo(landmarks[0].x * w, landmarks[0].y * h);
+        landmarks.forEach((landmark, idx) => {
+            if ([0, 5, 9, 13, 17].includes(idx)) {
+                ctx.lineTo(landmark.x * w, landmark.y * h);
+            }
+        });
+        ctx.closePath();
+        ctx.stroke();
+        
+        // Draw key points
+        ctx.fillStyle = '#00ff88';
+        landmarks.forEach((landmark, idx) => {
+            if ([0, 4, 8, 12, 16, 20].includes(idx)) {
+                ctx.beginPath();
+                ctx.arc(landmark.x * w, landmark.y * h, 5, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        });
+        
+        ctx.restore();
+    }
+    
+    showCaptureFlash() {
+        const flash = document.createElement('div');
+        flash.className = 'capture-flash';
+        document.querySelector('.dot-projector-container').appendChild(flash);
+        setTimeout(() => flash.remove(), 300);
+    }
+    
+    showGallery() {
+        const gallery = document.getElementById('captureGallery');
+        const content = document.getElementById('galleryContent');
+        
+        content.innerHTML = '';
+        
+        if (this.captures.length === 0) {
+            content.innerHTML = '<p style="text-align: center; color: #888;">No captures yet</p>';
+        } else {
+            this.captures.forEach(capture => {
+                const item = document.createElement('div');
+                item.className = 'capture-item';
+                
+                const date = new Date(capture.timestamp);
+                const timeStr = date.toLocaleString();
+                
+                item.innerHTML = `
+                    <img src="${capture.image}" alt="Palm capture">
+                    <div class="capture-info">
+                        <div class="capture-time">${timeStr}</div>
+                        <div class="capture-metrics">
+                            Distance: ${capture.metrics.distance}cm | 
+                            Alignment: ${capture.metrics.alignment}%
+                        </div>
+                    </div>
+                    <button class="delete-btn" onclick="dotProjector.deleteCapture(${capture.id})">&times;</button>
+                `;
+                
+                content.appendChild(item);
+            });
+        }
+        
+        gallery.style.display = 'block';
+    }
+    
+    hideGallery() {
+        document.getElementById('captureGallery').style.display = 'none';
+    }
+    
+    deleteCapture(id) {
+        this.captures = this.captures.filter(c => c.id !== id);
+        localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+        this.showGallery(); // Refresh gallery
     }
     
     animate() {

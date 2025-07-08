@@ -81,10 +81,23 @@
             </div>
             
             <video id="inputVideo" style="display: none;"></video>
+            <canvas id="captureCanvas" style="display: none;"></canvas>
             
             <div class="controls">
                 <button id="startBtn" class="control-btn primary">Start Scanning</button>
                 <button id="captureBtn" class="control-btn secondary" disabled>Capture</button>
+                <button id="galleryBtn" class="control-btn secondary">View Gallery</button>
+            </div>
+        </div>
+        
+        <!-- Capture Gallery -->
+        <div id="captureGallery" class="capture-gallery" style="display: none;">
+            <div class="gallery-header">
+                <h3>Captured Palm Scans</h3>
+                <button id="closeGalleryBtn" class="close-btn">&times;</button>
+            </div>
+            <div id="galleryContent" class="gallery-content">
+                <!-- Captured images will be added here -->
             </div>
         </div>
     </div>
