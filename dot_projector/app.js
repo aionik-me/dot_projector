@@ -447,7 +447,7 @@ class DotProjector {
             z: -palmCenter.z * 100
         };
         
-        this.dots.forEach((dot, index) => {
+        this.dots.forEach((dot) => {
             // Calculate distance to palm center in 3D
             const distToPalm = Math.sqrt(
                 Math.pow(dot.basePosition.x - palm3D.x, 2) + 
@@ -512,7 +512,7 @@ class DotProjector {
             this.updateStatus('Extend your fingers', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance < 25) {
+        } else if (distance < 15) {
             this.updateStatus('Move hand further away', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
@@ -520,11 +520,11 @@ class DotProjector {
             this.updateStatus('Move hand closer', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (alignment < 0.65) { // Higher threshold for better quality
+        } else if (alignment < 0.4) { // Much more lenient
             this.updateStatus('Center your palm', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance >= 25 && distance <= 35 && alignment > 0.65 && fingersExtended) {
+        } else if (distance >= 15 && distance <= 35 && alignment >= 0.4 && fingersExtended) {
             this.updateStatus('Perfect! Hold steady', 'success');
             this.handlePerfectAlignment();
         }
@@ -542,56 +542,55 @@ class DotProjector {
     
     calculateDistance(palmCenter) {
         // Convert z-coordinate to distance in cm
-        // z is negative when hand is close, positive when far
-        return Math.round(30 + palmCenter.z * 200);
+        // z is typically between -0.15 (close) and 0.15 (far)
+        // Let's use a more realistic conversion
+        const normalizedZ = Math.max(-0.2, Math.min(0.2, palmCenter.z));
+        return Math.round(25 + normalizedZ * 100);
     }
     
     calculateAlignment(landmarks) {
         // Check if all landmarks are within frame bounds
-        const margin = 0.08; // 8% margin from edges
+        const margin = 0.05; // 5% margin from edges - more lenient
         let allVisible = true;
-        let criticalPointsVisible = true;
         
-        // Check all landmarks
-        landmarks.forEach((landmark, idx) => {
+        // Check critical landmarks only
+        const criticalPoints = [0, 4, 8, 12, 16, 20]; // Wrist and fingertips
+        criticalPoints.forEach(idx => {
+            const landmark = landmarks[idx];
             if (landmark.x < margin || landmark.x > 1 - margin ||
                 landmark.y < margin || landmark.y > 1 - margin) {
                 allVisible = false;
-                // Critical points: fingertips and palm base
-                if ([0, 4, 8, 12, 16, 20, 5, 9, 13, 17].includes(idx)) {
-                    criticalPointsVisible = false;
-                }
             }
         });
         
-        if (!criticalPointsVisible) return 0;
+        if (!allVisible) return 0;
         
         // Calculate palm area to ensure hand is properly sized
         const palmArea = this.calculatePalmArea(landmarks);
-        const minArea = 0.06; // Minimum acceptable area
-        const maxArea = 0.25; // Maximum (too close)
-        const areaScore = palmArea < minArea ? 0 : 
-                         palmArea > maxArea ? 0.5 : 1;
+        const minArea = 0.03; // Much more lenient minimum
+        const maxArea = 0.3; // Allow larger hands
+        const areaScore = palmArea < minArea ? palmArea / minArea : 
+                         palmArea > maxArea ? 0.7 : 1;
         
-        // Check palm is facing camera
+        // Check palm is facing camera (more lenient)
         const palmNormal = this.calculatePalmNormal(landmarks);
-        const orientationScore = Math.max(0, Math.min(1, palmNormal.z));
+        const orientationScore = Math.max(0, Math.min(1, palmNormal.z * 1.5));
         
-        // Check finger spread
+        // Check finger spread (more lenient)
         const fingerSpread = this.calculateFingerSpread(landmarks);
-        const spreadScore = Math.min(1, fingerSpread / 0.15);
+        const spreadScore = Math.min(1, fingerSpread / 0.1); // Lower requirement
         
-        // Calculate center position (prefer centered hands)
+        // Calculate center position (much more lenient)
         const palmCenter = this.calculatePalmCenter(landmarks);
         const centerDistance = Math.sqrt(
             Math.pow(palmCenter.x - 0.5, 2) + 
             Math.pow(palmCenter.y - 0.5, 2)
         );
-        const centerScore = Math.max(0, 1 - centerDistance * 2);
+        const centerScore = Math.max(0.5, 1 - centerDistance); // More forgiving
         
-        // Combine factors
+        // Combine factors with adjusted weights
         const alignment = allVisible ? 
-            (areaScore * 0.3 + orientationScore * 0.3 + spreadScore * 0.2 + centerScore * 0.2) : 
+            (areaScore * 0.25 + orientationScore * 0.35 + spreadScore * 0.15 + centerScore * 0.25) : 
             0;
         
         return Math.max(0, Math.min(1, alignment));
@@ -834,32 +833,70 @@ class DotProjector {
         const w = this.captureCanvas.width;
         const h = this.captureCanvas.height;
         
-        // First, draw the full video frame
-        ctx.drawImage(this.videoElement, 0, 0, w, h);
+        // Create off-screen canvas for masking
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = w;
+        maskCanvas.height = h;
+        const maskCtx = maskCanvas.getContext('2d');
         
-        // Create a subtle vignette effect instead of cutting out
-        ctx.save();
+        // Get palm bounds with padding for zoom
+        const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
         
-        // Get palm bounds for focus area
-        const palmBounds = this.getPalmBounds(this.palmData, w, h, 100);
+        // Calculate zoom factor to fill canvas nicely
+        const zoomFactorX = w / palmBounds.width;
+        const zoomFactorY = h / palmBounds.height;
+        const zoomFactor = Math.min(zoomFactorX, zoomFactorY) * 0.8; // 80% to leave some margin
         
-        // Create radial gradient for vignette
-        const vignetteGradient = ctx.createRadialGradient(
-            palmBounds.centerX, palmBounds.centerY, palmBounds.radius * 0.5,
-            palmBounds.centerX, palmBounds.centerY, palmBounds.radius * 2
-        );
-        vignetteGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignetteGradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.2)');
-        vignetteGradient.addColorStop(1, 'rgba(0, 0, 0, 0.8)');
+        // Calculate translation to center the palm
+        const translateX = (w - palmBounds.width * zoomFactor) / 2 - palmBounds.left * zoomFactor;
+        const translateY = (h - palmBounds.height * zoomFactor) / 2 - palmBounds.top * zoomFactor;
         
-        // Apply vignette
-        ctx.fillStyle = vignetteGradient;
+        // First, create a mask of the hand area
+        maskCtx.save();
+        maskCtx.translate(translateX, translateY);
+        maskCtx.scale(zoomFactor, zoomFactor);
+        
+        // Create generous hand mask
+        maskCtx.fillStyle = 'white';
+        maskCtx.beginPath();
+        this.createHandMask(maskCtx, this.palmData, w, h);
+        maskCtx.fill();
+        
+        // Apply gaussian blur effect to mask edges
+        maskCtx.filter = 'blur(20px)';
+        maskCtx.globalCompositeOperation = 'source-over';
+        maskCtx.drawImage(maskCanvas, 0, 0);
+        maskCtx.restore();
+        
+        // Draw background first
+        const gradient = ctx.createLinearGradient(0, 0, 0, h);
+        gradient.addColorStop(0, '#e8f5e9');
+        gradient.addColorStop(0.5, '#f0f4f0');
+        gradient.addColorStop(1, '#e0f2f1');
+        ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, w, h);
         
+        // Apply the hand image with mask
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.drawImage(maskCanvas, 0, 0);
+        ctx.globalCompositeOperation = 'source-in';
+        
+        // Draw the zoomed video frame only where mask is
+        ctx.translate(translateX, translateY);
+        ctx.scale(zoomFactor, zoomFactor);
+        ctx.drawImage(this.videoElement, 0, 0, w, h);
         ctx.restore();
         
-        // Add biometric overlay
+        // Add edge softening
+        this.applyEdgeSoftening(ctx, w, h, palmBounds, zoomFactor, translateX, translateY);
+        
+        // Add biometric overlay (adjusted for zoom)
+        ctx.save();
+        ctx.translate(translateX, translateY);
+        ctx.scale(zoomFactor, zoomFactor);
         this.drawBiometricOverlay(ctx, this.palmData, w, h);
+        ctx.restore();
         
         // Add scan lines effect
         ctx.save();
@@ -868,12 +905,102 @@ class DotProjector {
         ctx.lineWidth = 1;
         
         // Horizontal scan lines
-        for (let y = 0; y < h; y += 20) {
+        for (let y = 0; y < h; y += 15) {
             ctx.beginPath();
             ctx.moveTo(0, y);
             ctx.lineTo(w, y);
             ctx.stroke();
         }
+        
+        // Add biometric frame
+        ctx.globalAlpha = 0.3;
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(20, 20, w - 40, h - 40);
+        
+        ctx.restore();
+    }
+    
+    createHandMask(ctx, landmarks, w, h) {
+        // Create a generous outline that includes entire hand with padding
+        const padding = 60;
+        
+        // Start with wrist
+        ctx.moveTo(landmarks[0].x * w - padding, landmarks[0].y * h + padding);
+        
+        // Thumb outline
+        ctx.quadraticCurveTo(
+            landmarks[1].x * w - padding * 1.5, landmarks[1].y * h,
+            landmarks[4].x * w - padding, landmarks[4].y * h - padding * 1.2
+        );
+        
+        // Bridge to index finger
+        ctx.quadraticCurveTo(
+            landmarks[3].x * w, landmarks[3].y * h - padding * 1.5,
+            landmarks[8].x * w - padding * 0.5, landmarks[8].y * h - padding * 1.2
+        );
+        
+        // Top of fingers
+        ctx.quadraticCurveTo(
+            landmarks[12].x * w, landmarks[12].y * h - padding * 1.5,
+            landmarks[16].x * w + padding * 0.5, landmarks[16].y * h - padding * 1.2
+        );
+        
+        // Pinky side
+        ctx.quadraticCurveTo(
+            landmarks[20].x * w + padding * 1.2, landmarks[20].y * h - padding,
+            landmarks[20].x * w + padding * 1.5, landmarks[20].y * h
+        );
+        
+        // Down pinky side
+        ctx.quadraticCurveTo(
+            landmarks[19].x * w + padding * 1.5, landmarks[19].y * h + padding * 0.5,
+            landmarks[17].x * w + padding, landmarks[17].y * h + padding
+        );
+        
+        // Back to wrist
+        ctx.quadraticCurveTo(
+            landmarks[0].x * w, landmarks[0].y * h + padding * 1.5,
+            landmarks[0].x * w - padding, landmarks[0].y * h + padding
+        );
+        
+        ctx.closePath();
+    }
+    
+    applyEdgeSoftening(ctx, w, h, _, zoomFactor, translateX, translateY) {
+        // Apply subtle edge gradient to blend with background
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        
+        // Create edge gradient
+        const edgeGradient = ctx.createRadialGradient(
+            w/2, h/2, Math.min(w, h) * 0.3,
+            w/2, h/2, Math.min(w, h) * 0.5
+        );
+        edgeGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        edgeGradient.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
+        edgeGradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+        
+        ctx.fillStyle = edgeGradient;
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.restore();
+        
+        // Add subtle shadow around hand
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = 30;
+        ctx.shadowOffsetX = 5;
+        ctx.shadowOffsetY = 5;
+        
+        // Draw shadow shape
+        ctx.translate(translateX, translateY);
+        ctx.scale(zoomFactor, zoomFactor);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        ctx.beginPath();
+        this.createHandMask(ctx, this.palmData, w, h);
+        ctx.fill();
         
         ctx.restore();
     }
@@ -955,40 +1082,105 @@ class DotProjector {
     
     drawBiometricOverlay(ctx, landmarks, w, h) {
         ctx.save();
-        ctx.globalAlpha = 0.3;
         
-        // Draw key biometric points
+        // Draw finger tracking connections
+        ctx.globalAlpha = 0.6;
         ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 1.5;
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = '#00ff88';
+        
+        // Draw hand skeleton
+        this.handConnections.forEach(([start, end]) => {
+            ctx.beginPath();
+            ctx.moveTo(landmarks[start].x * w, landmarks[start].y * h);
+            ctx.lineTo(landmarks[end].x * w, landmarks[end].y * h);
+            ctx.stroke();
+        });
+        
+        // Draw all landmark points
         ctx.fillStyle = '#00ff88';
+        ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1;
         
-        // Draw palm lines
-        ctx.beginPath();
-        
-        // Life line
-        ctx.moveTo(landmarks[5].x * w, landmarks[5].y * h);
-        ctx.quadraticCurveTo(
-            landmarks[2].x * w, landmarks[2].y * h,
-            landmarks[0].x * w, (landmarks[0].y + 0.1) * h
-        );
-        ctx.stroke();
-        
-        // Heart line
-        ctx.beginPath();
-        ctx.moveTo(landmarks[5].x * w, landmarks[5].y * h);
-        ctx.quadraticCurveTo(
-            landmarks[9].x * w, landmarks[9].y * h,
-            landmarks[17].x * w, landmarks[17].y * h
-        );
-        ctx.stroke();
-        
-        // Add biometric reference points
-        const keyPoints = [0, 5, 9, 13, 17]; // Palm base points
-        keyPoints.forEach(idx => {
+        landmarks.forEach((landmark, idx) => {
+            const x = landmark.x * w;
+            const y = landmark.y * h;
+            
+            // Determine point size based on importance
+            let radius = 3;
+            if ([4, 8, 12, 16, 20].includes(idx)) radius = 5; // Fingertips
+            if (idx === 0) radius = 6; // Wrist
+            
+            // Draw point
             ctx.beginPath();
-            ctx.arc(landmarks[idx].x * w, landmarks[idx].y * h, 3, 0, 2 * Math.PI);
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
             ctx.fill();
+            
+            // Draw outline for fingertips
+            if ([4, 8, 12, 16, 20].includes(idx)) {
+                ctx.stroke();
+            }
         });
+        
+        // Draw palm grid pattern
+        ctx.globalAlpha = 0.1;
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 0.5;
+        ctx.shadowBlur = 0;
+        
+        const palmBounds = this.getPalmBounds(landmarks, w, h, 0);
+        const gridSize = 30;
+        
+        for (let x = palmBounds.left; x < palmBounds.left + palmBounds.width; x += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(x, palmBounds.top);
+            ctx.lineTo(x, palmBounds.top + palmBounds.height);
+            ctx.stroke();
+        }
+        
+        for (let y = palmBounds.top; y < palmBounds.top + palmBounds.height; y += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(palmBounds.left, y);
+            ctx.lineTo(palmBounds.left + palmBounds.width, y);
+            ctx.stroke();
+        }
+        
+        // Draw biometric labels for key points
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#00ff88';
+        ctx.font = '10px monospace';
+        ctx.shadowBlur = 3;
+        
+        const fingerLabels = [
+            { idx: 4, label: 'T' },
+            { idx: 8, label: 'I' },
+            { idx: 12, label: 'M' },
+            { idx: 16, label: 'R' },
+            { idx: 20, label: 'P' },
+            { idx: 0, label: 'W' }
+        ];
+        
+        fingerLabels.forEach(point => {
+            const x = landmarks[point.idx].x * w;
+            const y = landmarks[point.idx].y * h;
+            ctx.fillText(point.label, x + 10, y - 8);
+        });
+        
+        // Add scan info
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = '#00ff88';
+        ctx.font = '11px monospace';
+        ctx.shadowBlur = 0;
+        
+        const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+        ctx.fillText(`SCAN TIME: ${timestamp}`, 30, h - 30);
+        ctx.fillText(`BIOMETRIC ID: ${Math.random().toString(36).substr(2, 9).toUpperCase()}`, 30, h - 45);
+        
+        // Add distance and alignment info
+        const distance = this.calculateDistance(this.calculatePalmCenter(landmarks));
+        const alignment = Math.round(this.calculateAlignment(landmarks) * 100);
+        ctx.fillText(`DISTANCE: ${distance}cm | ALIGNMENT: ${alignment}%`, 30, h - 60);
         
         ctx.restore();
     }
@@ -1051,7 +1243,7 @@ class DotProjector {
         
         this.animationFrame++;
         
-        this.dots.forEach((dot, index) => {
+        this.dots.forEach((dot) => {
             if (!this.palmData) {
                 const time = this.animationFrame * 0.01;
                 dot.position.z = Math.sin(time + dot.phase) * 2;
