@@ -1,6 +1,13 @@
 /**
  * DOT Projector - Palm Biometric Scanner Simulation
  * 
+ * A sophisticated web-based palm scanner featuring real-time hand tracking,
+ * 3D visualization, and dual-mode capture (RGB + IR simulation).
+ * 
+ * @class DotProjector
+ * @author [Your Name]
+ * @version 1.0.0
+ * 
  * CAPTURE MODES:
  * 1. Regular Mode: Single RGB capture from main camera
  * 2. IR Mode ON: Dual capture sequence (IR → RGB)
@@ -22,8 +29,24 @@
  * - Regular camera: Selected via top dropdown
  * - IR camera: Selected via second dropdown (appears when IR mode is ON)
  * - Auto-detection: Looks for 'ir', 'infrared', 'depth', or 'windows hello' in camera names
+ * 
+ * @example
+ * // Basic usage
+ * const scanner = new DotProjector();
+ * scanner.startScanning();
+ * 
+ * @example  
+ * // Custom validation
+ * scanner.minDistance = 10; // cm
+ * scanner.maxDistance = 50; // cm
  */
 class DotProjector {
+    /**
+     * Creates a new DotProjector instance
+     * Initializes all subsystems and starts the render loop
+     * 
+     * @constructor
+     */
     constructor() {
         this.canvas = document.getElementById('dotCanvas');
         
@@ -78,6 +101,12 @@ class DotProjector {
         this.init();
     }
     
+    /**
+     * Initializes the 3D scene, camera, renderer, and all visual elements
+     * Sets up lighting, creates dot pattern, and starts animation loop
+     * 
+     * @private
+     */
     init() {
         this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -100,6 +129,12 @@ class DotProjector {
         this.animate();
     }
     
+    /**
+     * Creates the 3D dot grid pattern using instanced rendering
+     * Generates ~324 dots in a 45x45 unit grid for performance
+     * 
+     * @private
+     */
     createDotPattern() {
         const dotGeometry = new THREE.SphereGeometry(0.3, 8, 8);
         const dotMaterial = new THREE.MeshPhongMaterial({
@@ -226,6 +261,12 @@ class DotProjector {
         this.scene.add(this.handPoints);
     }
     
+    /**
+     * Initializes MediaPipe Hands for real-time hand tracking
+     * Configures detection parameters and sets up result callbacks
+     * 
+     * @private
+     */
     setupHandTracking() {
         this.hands = new Hands({
             locateFile: (file) => {
@@ -257,6 +298,13 @@ class DotProjector {
         });
     }
     
+    /**
+     * Detects all available cameras and identifies IR cameras
+     * Creates camera selection UI if multiple cameras found
+     * 
+     * @async
+     * @returns {Promise<Array>} Array of available camera devices
+     */
     async detectCameras() {
         try {
             // Request initial permissions to get camera labels
@@ -380,6 +428,13 @@ class DotProjector {
         irSelector.value = this.selectedIRCameraId;
     }
     
+    /**
+     * Starts the scanning process
+     * Initializes camera, enables IR mode by default, begins hand detection
+     * 
+     * @async
+     * @public
+     */
     async startScanning() {
         if (this.isScanning) {
             this.stopScanning();
@@ -464,6 +519,14 @@ class DotProjector {
         requestAnimationFrame(() => this.detectHand());
     }
     
+    /**
+     * Processes hand detection results from MediaPipe
+     * Updates visualizations and triggers validation checks
+     * 
+     * @param {Object} results - MediaPipe detection results
+     * @param {Array} results.multiHandLandmarks - Array of detected hands (21 landmarks each)
+     * @private
+     */
     onHandResults(results) {
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             this.palmData = results.multiHandLandmarks[0];
@@ -840,6 +903,13 @@ class DotProjector {
         };
     }
     
+    /**
+     * Converts palm Z-coordinate to distance in centimeters
+     * Used for proximity validation and user feedback
+     * 
+     * @param {Object} palmCenter - Palm center coordinates {x, y, z}
+     * @returns {number} Distance in centimeters (8-45cm range)
+     */
     calculateDistance(palmCenter) {
         // Convert z-coordinate to distance in cm
         // z is typically between -0.15 (close) and 0.15 (far)
@@ -973,6 +1043,13 @@ class DotProjector {
         return extendedCount >= 3;
     }
     
+    /**
+     * Validates that the hand is open and flat (not a fist)
+     * Ensures palm is visible for proper biometric capture
+     * 
+     * @param {Array} landmarks - 21 hand landmarks from MediaPipe
+     * @returns {boolean} True if hand is sufficiently flat and open
+     */
     checkHandFlatness(landmarks) {
         // Check if palm is open (not a fist) and reasonably flat
         // We need to ensure palm is visible for biometric capture
@@ -1019,6 +1096,13 @@ class DotProjector {
         return openFingers >= 4 && maxZDeviation < 0.12;
     }
     
+    /**
+     * Verifies palm is facing the camera using normal vector calculation
+     * Works for both left and right hands
+     * 
+     * @param {Array} landmarks - 21 hand landmarks from MediaPipe
+     * @returns {boolean} True if palm is oriented toward camera
+     */
     checkPalmOrientation(landmarks) {
         // Check if palm is facing camera using normal vector
         const normal = this.calculatePalmNormal(landmarks);
@@ -1028,6 +1112,13 @@ class DotProjector {
         return Math.abs(normal.z) > 0.5;
     }
     
+    /**
+     * Detects hand rotation angle for alignment guidance
+     * Handles differences between left and right hands
+     * 
+     * @param {Array} landmarks - 21 hand landmarks from MediaPipe
+     * @returns {number} Rotation angle in degrees (positive = needs clockwise)
+     */
     checkHandRotation(landmarks) {
         // Check hand rotation by comparing middle finger to wrist alignment
         const wrist = landmarks[0];
@@ -1189,6 +1280,12 @@ class DotProjector {
         setTimeout(() => indicator.remove(), 900);
     }
     
+    /**
+     * Main capture method - routes to appropriate capture mode
+     * Handles both single (RGB) and dual (IR+RGB) capture flows
+     * 
+     * @public
+     */
     capture() {
         if (!this.palmData || !this.videoElement.srcObject) {
             this.updateStatus('No palm detected', 'error');
@@ -1298,6 +1395,20 @@ class DotProjector {
      * - Modify the camera switching order in this method
      * - Adjust the delay between captures (currently 100ms)
      * - Change which camera to return to after capture
+     */
+    /**
+     * Captures both IR and RGB images in proper sequence
+     * Switches cameras only if different devices selected
+     * 
+     * CAPTURE FLOW:
+     * 1. Switch to IR camera (if different)
+     * 2. Capture IR image with vein patterns
+     * 3. Switch to RGB camera (if different)
+     * 4. Capture regular RGB image
+     * 5. Store both with metadata
+     * 
+     * @async
+     * @private
      */
     async captureDualMode() {
         const w = this.captureCanvas.width;
