@@ -104,7 +104,10 @@
         <div id="captureGallery" class="capture-gallery" style="display: none;">
             <div class="gallery-header">
                 <h3>Captured Palm Scans</h3>
-                <button id="closeGalleryBtn" class="close-btn">&times;</button>
+                <div style="display: flex; gap: 10px;">
+                    <button id="clearAllBtn" class="control-btn secondary" style="font-size: 0.9rem; padding: 5px 10px;">Clear All</button>
+                    <button id="closeGalleryBtn" class="close-btn">&times;</button>
+                </div>
             </div>
             <div id="galleryContent" class="gallery-content">
                 <!-- Captured images will be added here -->

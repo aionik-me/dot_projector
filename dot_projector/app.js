@@ -95,7 +95,7 @@ class DotProjector {
         this.captureCooldown = 3000; // 3 seconds between captures
         
         // Debug mode
-        this.debug = false; // Set to true for debugging
+        this.debug = true; // Set to true for debugging
         
         // IR mode
         this.irMode = false;
@@ -310,10 +310,11 @@ class DotProjector {
         document.getElementById('captureBtn').addEventListener('click', () => this.capture());
         document.getElementById('galleryBtn').addEventListener('click', () => this.showGallery());
         document.getElementById('closeGalleryBtn').addEventListener('click', () => this.hideGallery());
+        document.getElementById('clearAllBtn').addEventListener('click', () => this.clearAllCaptures());
         
-        // Initially hide IR mode button until we detect cameras
+        // Show IR mode button
         const irModeBtn = document.getElementById('irModeBtn');
-        irModeBtn.style.display = 'none';
+        irModeBtn.style.display = 'inline-block';
         irModeBtn.addEventListener('click', () => this.toggleIRMode());
         
         document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
@@ -379,12 +380,10 @@ class DotProjector {
                 }
             }
             
-            // Show IR mode button if IR camera detected
+            // Always show IR mode button for simulated IR capture
             const irModeBtn = document.getElementById('irModeBtn');
-            if (this.hasIRCamera && irModeBtn) {
+            if (irModeBtn) {
                 irModeBtn.style.display = 'inline-block';
-            } else if (irModeBtn) {
-                irModeBtn.style.display = 'none';
             }
             
             return this.availableCameras;
@@ -969,6 +968,10 @@ class DotProjector {
             });
             
             // Fast and dynamic interaction
+            let finalX = dotPos.x;
+            let finalY = dotPos.y;
+            let finalZ = dotPos.z;
+            
             if (maxInfluence > 0) {
                 // Immediate response - dots push away from hand
                 const pushForce = maxInfluence * 8;
@@ -977,31 +980,23 @@ class DotProjector {
                 // Quick displacement
                 const displacementX = Math.cos(angle) * pushForce * maxInfluence;
                 const displacementY = Math.sin(angle) * pushForce * maxInfluence;
-                const zPos = dotPos.z + maxInfluence * 10; // Push forward
                 
-                // Set position with displacement
-                matrix.setPosition(
-                    dotPos.x + displacementX,
-                    dotPos.y + displacementY,
-                    zPos
-                );
+                finalX = dotPos.x + displacementX;
+                finalY = dotPos.y + displacementY;
+                finalZ = dotPos.z + maxInfluence * 10; // Push forward
                 
                 // Fast scale response
                 const scaleValue = 1 + maxInfluence * 2;
                 scale.set(scaleValue, scaleValue, scaleValue);
-                
-                // No rotation - keep it clean and fast
-                rotation.set(0, 0, 0);
             } else {
                 // Return to original position
-                matrix.setPosition(dotPos.x, dotPos.y, dotPos.z);
                 scale.set(1, 1, 1);
-                rotation.set(0, 0, 0);
             }
             
-            // Compose matrix
+            // Compose matrix with final position
+            rotation.set(0, 0, 0); // No rotation for clean look
             matrix.compose(
-                new THREE.Vector3(dotPos.x, dotPos.y, zPos),
+                new THREE.Vector3(finalX, finalY, finalZ),
                 new THREE.Quaternion().setFromEuler(rotation),
                 scale
             );
@@ -1073,6 +1068,7 @@ class DotProjector {
                 this.updateStatus('Close your palm a bit', 'warning');
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
+                console.log('Failed palm facing camera check', { isPalmFacingCamera });
             } else if (Math.abs(rotation) > 30) {
                 // Hand is rotated too much
                 if (rotation > 0) {
@@ -1082,14 +1078,17 @@ class DotProjector {
                 }
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
+                console.log('Failed rotation check', { rotation });
             } else if (!isHandFlat) {
                 // Hand must be open for proper palm capture
                 this.updateStatus('Open your palm fully', 'warning');
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
+                console.log('Failed hand flat check', { isHandFlat });
             } else {
                 this.updateStatus('Perfect! Hold steady', 'success');
                 this.handlePerfectAlignment();
+                console.log('All checks passed - perfect alignment');
             }
         }
     }
@@ -1323,14 +1322,15 @@ class DotProjector {
         const isLeftHand = this.handedness === 'Left';
         
         // Method 1: Z-depth based check
-        // In palm view, palm center should be further from camera than fingertips
-        // In back view, knuckles are prominent and closer than fingertips
+        // In palm view, fingertips are closer to camera (more negative z) than knuckles
+        // In back view, knuckles are closer to camera than fingertips
         const fingertips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
         const avgFingertipZ = fingertips.reduce((sum, tip) => sum + tip.z, 0) / 5;
         const avgMcpZ = (indexMcp.z + middleMcp.z + ringMcp.z + pinkyMcp.z) / 4;
         
-        // For palm view, MCPs should be further than fingertips (higher z value)
-        const depthCheck = avgMcpZ > avgFingertipZ - 0.02;
+        // For palm view, fingertips should be closer (more negative Z) than MCPs
+        // Add a small tolerance for close distances where depth differences are minimal
+        const depthCheck = avgFingertipZ < avgMcpZ + 0.01;
         
         // Method 2: Thumb position relative to palm
         // Calculate palm normal using cross product
@@ -1353,107 +1353,9 @@ class DotProjector {
             z: v1.x * v2.y - v1.y * v2.x
         };
         
-        // For left hand, the normal should point away from camera (positive z)
-        // For right hand, the normal should point away from camera (negative z) when showing palm
-        const normalCheck = isLeftHand ? normal.z > 0 : normal.z < 0;
-        
-        // Method 2: Knuckle prominence check
-        // When viewing the back of hand, knuckles (MCPs) are more prominent (closer to camera)
-        // When viewing palm, finger bases are less prominent relative to palm center
-        const palmCenter = {
-            x: (wrist.x + indexMcp.x + pinkyMcp.x) / 3,
-            y: (wrist.y + indexMcp.y + pinkyMcp.y) / 3,
-            z: (wrist.z + indexMcp.z + pinkyMcp.z) / 3
-        };
-        
-        // Check MCP prominence
-        const mcps = [indexMcp, middleMcp, ringMcp, pinkyMcp];
-        let mcpsCloserThanPalm = 0;
-        
-        mcps.forEach(mcp => {
-            // In back view, MCPs are closer (more negative Z)
-            if (mcp.z < palmCenter.z - 0.01) {
-                mcpsCloserThanPalm++;
-            }
-        });
-        
-        // For palm view, MCPs should not be significantly closer than palm center
-        const mcpPatternCorrect = mcpsCloserThanPalm < 2;
-        
-        // Method 3: Thumb rotation check
-        // The thumb's orientation relative to the palm changes between views
-        const thumbVector = {
-            x: thumbTip.x - thumbCmc.x,
-            y: thumbTip.y - thumbCmc.y,
-            z: thumbTip.z - thumbCmc.z
-        };
-        
-        const palmNormal = this.calculateSimplePalmNormal(landmarks);
-        
-        // For palm view, thumb extends somewhat forward (negative Z direction)
-        // For back view, thumb appears more parallel to palm
-        const thumbForwardness = -thumbVector.z; // Negative because forward is -Z
-        const thumbPatternCorrect = thumbForwardness > 0.02;
-        
-        // Method 4: Wrist-to-fingers depth gradient
-        // In palm view, there's usually a gradual depth change from wrist to fingers
-        // In back view, the gradient can be reversed or irregular
-        const fingerBases = [indexMcp, middleMcp, ringMcp, pinkyMcp];
-        let gradientScore = 0;
-        
-        fingerBases.forEach(base => {
-            // Check if finger bases are further than wrist (expected for palm)
-            if (base.z > wrist.z) {
-                gradientScore++;
-            }
-        });
-        
-        const gradientCorrect = gradientScore >= 3;
-        
-        // Method 5: Palm center depth check
-        // In palm view, the palm center (between wrist and MCPs) tends to be slightly recessed
-        // In back view, this area tends to be more prominent
-        const realPalmCenter = {
-            x: (wrist.x + indexMcp.x + middleMcp.x + ringMcp.x + pinkyMcp.x) / 5,
-            y: (wrist.y + indexMcp.y + middleMcp.y + ringMcp.y + pinkyMcp.y) / 5,
-            z: (wrist.z + indexMcp.z + middleMcp.z + ringMcp.z + pinkyMcp.z) / 5
-        };
-        
-        // Compare with middle of middle finger (landmark 11)
-        const middleMiddle = landmarks[11];
-        const palmDepthCorrect = realPalmCenter.z > middleMiddle.z - 0.02; // Palm should not be too prominent
-        
-        // Method 6: Thumb base angle check
-        // The angle between thumb CMC-MCP-IP changes between palm and back views
-        const thumbAngle = this.calculateAngle(thumbCmc, thumbMcp, thumbIp);
-        // Use same range for both hands to avoid bias
-        const thumbAngleCorrect = thumbAngle > 150 && thumbAngle < 210;
-        
-        if (this.debug) {
-            console.log('Palm orientation checks:', {
-                hand: isLeftHand ? 'LEFT' : 'RIGHT',
-                thumbSideCorrect,
-                mcpPatternCorrect,
-                thumbPatternCorrect,
-                gradientCorrect,
-                palmDepthCorrect,
-                thumbAngleCorrect,
-                passedChecks: [thumbSideCorrect, mcpPatternCorrect, thumbPatternCorrect, gradientCorrect, palmDepthCorrect, thumbAngleCorrect].filter(c => c).length,
-                mcpsCloserThanPalm,
-                thumbForwardness: thumbForwardness.toFixed(3),
-                thumbAngle: thumbAngle.toFixed(0)
-            });
-        }
-        
-        // Require multiple checks to pass
-        const passedChecks = [
-            thumbSideCorrect, 
-            mcpPatternCorrect, 
-            thumbPatternCorrect, 
-            gradientCorrect,
-            palmDepthCorrect,
-            thumbAngleCorrect
-        ].filter(check => check).length;
+        // For left hand, the normal should point toward camera (negative z)
+        // For right hand, the normal should point toward camera (positive z) when showing palm
+        const normalCheck = isLeftHand ? normal.z < 0 : normal.z > 0;
         
         // Simplified approach: use depth and normal checks which are most reliable
         if (this.debug) {
@@ -1796,7 +1698,7 @@ class DotProjector {
             
             this.createRegularCapture(this.captureCtx, this.captureCanvas.width, this.captureCanvas.height);
             
-            // Convert to blob and save
+            // Convert to blob with compression
             this.captureCanvas.toBlob((blob) => {
                 const reader = new FileReader();
                 reader.onloadend = () => {
@@ -1812,9 +1714,21 @@ class DotProjector {
                     };
                     
                     this.captures.unshift(captureData);
-                    if (this.captures.length > 20) this.captures.pop();
+                    // Reduce max captures to prevent quota issues
+                    if (this.captures.length > 10) {
+                        this.captures = this.captures.slice(0, 10);
+                    }
                     
-                    localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    try {
+                        localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    } catch (e) {
+                        if (e.name === 'QuotaExceededError') {
+                            console.warn('Storage quota exceeded, clearing old captures');
+                            // Keep only the 5 most recent captures
+                            this.captures = this.captures.slice(0, 5);
+                            localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                        }
+                    }
                     this.updateStatus('Captured successfully!', 'success');
                     
                     setTimeout(() => {
@@ -1822,7 +1736,7 @@ class DotProjector {
                     }, 2000);
                 };
                 reader.readAsDataURL(blob);
-            });
+            }, 'image/jpeg', 0.8); // Use JPEG compression at 80% quality
         }
         
         this.isAutoCapturing = false;
@@ -1914,7 +1828,14 @@ class DotProjector {
         };
         
         // Check if we need to switch cameras
-        const needsCameraSwitch = this.selectedIRCameraId !== this.selectedCameraId;
+        const needsCameraSwitch = this.selectedIRCameraId && this.selectedIRCameraId !== this.selectedCameraId;
+        
+        console.log('IR Capture Debug:', {
+            selectedCameraId: this.selectedCameraId,
+            selectedIRCameraId: this.selectedIRCameraId,
+            needsCameraSwitch,
+            availableCameras: this.availableCameras.length
+        });
         
         // Show enhanced capture feedback
         this.showEnhancedCaptureFeedback();
@@ -1930,7 +1851,7 @@ class DotProjector {
                 
                 // Capture IR image
                 this.createIRVeinCapture(this.captureCtx, w, h);
-                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
                 
                 // Step 2: Switch back to RGB camera and capture
                 await this.switchToCamera(this.selectedCameraId);
@@ -1938,19 +1859,19 @@ class DotProjector {
                 
                 // Capture regular image
                 this.createRegularCapture(this.captureCtx, w, h);
-                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
             } else {
                 // Same camera - just capture both modes without switching
                 // Capture IR image first
                 this.createIRVeinCapture(this.captureCtx, w, h);
-                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
                 
                 // Small delay to simulate mode switch
                 await new Promise(resolve => setTimeout(resolve, 50));
                 
                 // Capture regular image
                 this.createRegularCapture(this.captureCtx, w, h);
-                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve));
+                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
             }
             
             // Process and save both captures
@@ -1980,11 +1901,21 @@ class DotProjector {
                     // Save both captures
                     this.captures.unshift(regularCapture);
                     this.captures.unshift(irCapture);
-                    if (this.captures.length > 20) {
-                        this.captures.splice(20);
+                    // Reduce max captures to prevent quota issues
+                    if (this.captures.length > 10) {
+                        this.captures = this.captures.slice(0, 10);
                     }
                     
-                    localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    try {
+                        localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                    } catch (e) {
+                        if (e.name === 'QuotaExceededError') {
+                            console.warn('Storage quota exceeded, clearing old captures');
+                            // Keep only the 5 most recent captures
+                            this.captures = this.captures.slice(0, 5);
+                            localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                        }
+                    }
                     this.updateStatus('Captured IR + RGB successfully!', 'success');
                     
                     setTimeout(() => {
@@ -2063,6 +1994,8 @@ class DotProjector {
     }
     
     createIRVeinCapture(ctx, w, h) {
+        console.log('Creating IR vein capture');
+        
         // Get palm bounds with padding for zoom
         const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
         
@@ -2075,17 +2008,17 @@ class DotProjector {
         const translateX = (w - palmBounds.width * zoomFactor) / 2 - palmBounds.left * zoomFactor;
         const translateY = (h - palmBounds.height * zoomFactor) / 2 - palmBounds.top * zoomFactor;
         
-        // Dark background for IR
-        ctx.fillStyle = '#0a0a0a';
+        // Dark purple background for IR
+        ctx.fillStyle = '#1a001a';
         ctx.fillRect(0, 0, w, h);
         
-        // Draw video in IR style (darkened)
+        // Draw video in IR style (heavily filtered)
         ctx.save();
         ctx.translate(translateX, translateY);
         ctx.scale(zoomFactor, zoomFactor);
         
-        // Apply IR filter to video
-        ctx.filter = 'brightness(0.3) contrast(1.5)';
+        // Apply strong IR filter to video - make it purple/magenta
+        ctx.filter = 'brightness(0.2) contrast(2) hue-rotate(270deg) saturate(3)';
         ctx.drawImage(this.videoElement, 0, 0, w, h);
         ctx.filter = 'none';
         
@@ -2109,9 +2042,9 @@ class DotProjector {
     drawVeinPattern(ctx, landmarks, w, h) {
         ctx.save();
         ctx.strokeStyle = '#ff00ff';
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.6;
-        ctx.shadowBlur = 10;
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.8;
+        ctx.shadowBlur = 15;
         ctx.shadowColor = '#ff00ff';
         
         // Generate procedural vein paths
@@ -2601,6 +2534,14 @@ class DotProjector {
         this.captures = this.captures.filter(c => c.id !== id);
         localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
         this.showGallery(); // Refresh gallery
+    }
+    
+    clearAllCaptures() {
+        if (confirm('Are you sure you want to delete all captures?')) {
+            this.captures = [];
+            localStorage.removeItem('palmCaptures');
+            this.showGallery(); // Refresh gallery to show empty state
+        }
     }
     
     /**
