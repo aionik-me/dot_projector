@@ -156,7 +156,7 @@ class DotProjector {
         });
         
         // Expanded grid size for wider capture area
-        const gridSize = 45; // Increased from 30
+        const gridSize = 45;
         const spacing = 2.5;
         let count = 0;
         
@@ -196,7 +196,7 @@ class DotProjector {
                 color.setRGB(0, intensity, intensity * 0.5);
                 this.instancedDots.setColorAt(index, color);
                 
-                // Store position and phase for animation
+                // Store position for animation
                 this.dotPositions.push({ x, y, z: 0 });
                 this.dotPhases.push(Math.random() * Math.PI * 2);
                 
@@ -310,7 +310,12 @@ class DotProjector {
         document.getElementById('captureBtn').addEventListener('click', () => this.capture());
         document.getElementById('galleryBtn').addEventListener('click', () => this.showGallery());
         document.getElementById('closeGalleryBtn').addEventListener('click', () => this.hideGallery());
-        document.getElementById('irModeBtn').addEventListener('click', () => this.toggleIRMode());
+        
+        // Initially hide IR mode button until we detect cameras
+        const irModeBtn = document.getElementById('irModeBtn');
+        irModeBtn.style.display = 'none';
+        irModeBtn.addEventListener('click', () => this.toggleIRMode());
+        
         document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
         document.getElementById('closeSettingsBtn').addEventListener('click', () => this.hideSettings());
         
@@ -365,14 +370,21 @@ class DotProjector {
             if (this.availableCameras.length > 1) {
                 this.addCameraSelector();
             } else if (this.availableCameras.length === 1) {
-                // Set the single camera as default
-                this.selectedCameraId = this.availableCameras[0].deviceId;
-                this.selectedIRCameraId = this.availableCameras[0].deviceId;
+                // Set the single camera as default only if not already set
+                if (!this.selectedCameraId) {
+                    this.selectedCameraId = this.availableCameras[0].deviceId;
+                }
+                if (!this.selectedIRCameraId) {
+                    this.selectedIRCameraId = this.availableCameras[0].deviceId;
+                }
             }
             
             // Show IR mode button if IR camera detected
-            if (this.hasIRCamera) {
-                document.getElementById('irModeBtn').style.display = 'inline-block';
+            const irModeBtn = document.getElementById('irModeBtn');
+            if (this.hasIRCamera && irModeBtn) {
+                irModeBtn.style.display = 'inline-block';
+            } else if (irModeBtn) {
+                irModeBtn.style.display = 'none';
             }
             
             return this.availableCameras;
@@ -421,9 +433,9 @@ class DotProjector {
             option.textContent = camera.label || `Camera ${index + 1}`;
             
             // Mark likely IR cameras
-            const label = camera.label.toLowerCase();
-            if (label.includes('ir') || label.includes('infrared') || 
-                label.includes('depth') || label.includes('windows hello')) {
+            const label = (camera.label || '').toLowerCase();
+            if (label && (label.includes('ir') || label.includes('infrared') || 
+                label.includes('depth') || label.includes('windows hello'))) {
                 option.textContent += ' (IR)';
                 // Set as default IR camera if found
                 if (!this.selectedIRCameraId) {
@@ -464,12 +476,15 @@ class DotProjector {
         
         // Set defaults only if cameras are available
         if (this.availableCameras.length > 0) {
-            this.selectedCameraId = this.availableCameras[0].deviceId;
+            // Set default camera if not already set
+            if (!this.selectedCameraId) {
+                this.selectedCameraId = this.availableCameras[0].deviceId;
+            }
             if (!this.selectedIRCameraId) {
                 this.selectedIRCameraId = this.availableCameras[0].deviceId;
             }
             
-            // Set selector values
+            // Set selector values to match current selection
             selector.value = this.selectedCameraId;
             irSelector.value = this.selectedIRCameraId;
         }
@@ -498,16 +513,14 @@ class DotProjector {
             // Detect cameras on first scan
             if (this.availableCameras.length === 0) {
                 await this.detectCameras();
-            
-            // Check if still no cameras after detection
-            if (this.availableCameras.length === 0) {
-                this.updateStatus('No cameras found', 'error');
-                this.isScanning = false;
-                return;
+                
+                // Check if still no cameras after detection
+                if (this.availableCameras.length === 0) {
+                    this.updateStatus('No cameras found', 'error');
+                    this.isScanning = false;
+                    return;
+                }
             }
-        }
-        
-        try {
             this.isScanning = true;
             document.getElementById('startBtn').textContent = 'Stop Scanning';
             document.getElementById('startBtn').classList.remove('primary');
@@ -525,10 +538,10 @@ class DotProjector {
                 }
             };
             
-            // Always use regular camera for live preview
-            // We'll only switch to IR camera during actual capture if needed
-            if (this.selectedCameraId) {
-                constraints.video.deviceId = { exact: this.selectedCameraId };
+            // Use IR camera if in IR mode, otherwise use regular camera
+            const cameraId = this.irMode ? this.selectedIRCameraId : this.selectedCameraId;
+            if (cameraId) {
+                constraints.video.deviceId = { exact: cameraId };
             }
             
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -545,9 +558,7 @@ class DotProjector {
             await this.videoElement.play();
             
             // Enable IR mode after camera starts (prevents delay)
-            if (!this.irMode) {
-                this.toggleIRMode();
-            }
+            // Removed automatic IR mode toggle to prevent errors
             
             this.updateStatus('Detecting hands...', 'scanning');
             this.detectHand();
@@ -701,7 +712,8 @@ class DotProjector {
         
         // Update line color
         this.handLines.material.color.setHex(handColor);
-        this.handPoints.material.color.setHex(handColor);
+        // Update point color using uniforms for shader material
+        this.handPoints.material.uniforms.color.value.setHex(handColor);
         
         // Update line positions
         const linePositions = this.handLines.geometry.attributes.position.array;
@@ -956,35 +968,34 @@ class DotProjector {
                 }
             });
             
-            // Enhanced wave effects based on landmark type
-            let waveOffset = 0;
-            let pulseSpeed = 0.02;
-            
-            if (closestLandmarkIdx >= 0) {
-                if ([4, 8, 12, 16, 20].includes(closestLandmarkIdx)) {
-                    // Fingertips create rapid pulses
-                    pulseSpeed = 0.04;
-                    waveOffset = Math.sin(this.animationFrame * pulseSpeed + minDistance * 0.3) * 5 * maxInfluence;
-                } else {
-                    // Palm creates smoother waves
-                    waveOffset = Math.sin(this.animationFrame * pulseSpeed + this.dotPhases[index] - distToPalm * 0.1) * 3;
-                }
-            }
-            
-            // Enhanced Z position with better interaction
-            const zInfluence = maxInfluence * maxInfluence; // Squared for more dramatic effect
-            const zPos = dotPos.z + waveOffset + palm3D.z * zInfluence * 0.15;
-            
-            // Dynamic scale with better response
-            const scaleValue = 1 + zInfluence * 1.5;
-            scale.set(scaleValue, scaleValue, scaleValue);
-            
-            // Enhanced rotation for dynamic effect
+            // Fast and dynamic interaction
             if (maxInfluence > 0) {
-                rotation.x = this.animationFrame * 0.03 * maxInfluence;
-                rotation.y = this.animationFrame * 0.03 * maxInfluence;
-                rotation.z = Math.sin(this.animationFrame * 0.02) * maxInfluence * 0.3;
+                // Immediate response - dots push away from hand
+                const pushForce = maxInfluence * 8;
+                const angle = Math.atan2(dotPos.y - palm3D.y, dotPos.x - palm3D.x);
+                
+                // Quick displacement
+                const displacementX = Math.cos(angle) * pushForce * maxInfluence;
+                const displacementY = Math.sin(angle) * pushForce * maxInfluence;
+                const zPos = dotPos.z + maxInfluence * 10; // Push forward
+                
+                // Set position with displacement
+                matrix.setPosition(
+                    dotPos.x + displacementX,
+                    dotPos.y + displacementY,
+                    zPos
+                );
+                
+                // Fast scale response
+                const scaleValue = 1 + maxInfluence * 2;
+                scale.set(scaleValue, scaleValue, scaleValue);
+                
+                // No rotation - keep it clean and fast
+                rotation.set(0, 0, 0);
             } else {
+                // Return to original position
+                matrix.setPosition(dotPos.x, dotPos.y, dotPos.z);
+                scale.set(1, 1, 1);
                 rotation.set(0, 0, 0);
             }
             
@@ -1308,33 +1319,43 @@ class DotProjector {
         const ringMcp = landmarks[13];
         const pinkyMcp = landmarks[17];
         
-        // Method 1: Thumb CMC (carpometacarpal) position check
-        // When viewing palm, thumb CMC is visually "inside" the hand outline
-        // When viewing back, thumb CMC appears more "outside"
+        // Use MediaPipe's handedness info if available
+        const isLeftHand = this.handedness === 'Left';
         
-        // Create a line from index MCP to pinky MCP
-        const indexToPinky = {
-            x: pinkyMcp.x - indexMcp.x,
-            y: pinkyMcp.y - indexMcp.y
+        // Method 1: Z-depth based check
+        // In palm view, palm center should be further from camera than fingertips
+        // In back view, knuckles are prominent and closer than fingertips
+        const fingertips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+        const avgFingertipZ = fingertips.reduce((sum, tip) => sum + tip.z, 0) / 5;
+        const avgMcpZ = (indexMcp.z + middleMcp.z + ringMcp.z + pinkyMcp.z) / 4;
+        
+        // For palm view, MCPs should be further than fingertips (higher z value)
+        const depthCheck = avgMcpZ > avgFingertipZ - 0.02;
+        
+        // Method 2: Thumb position relative to palm
+        // Calculate palm normal using cross product
+        const v1 = {
+            x: indexMcp.x - wrist.x,
+            y: indexMcp.y - wrist.y,
+            z: indexMcp.z - wrist.z
         };
         
-        // Vector from index MCP to thumb CMC
-        const indexToThumb = {
-            x: thumbCmc.x - indexMcp.x,
-            y: thumbCmc.y - indexMcp.y
+        const v2 = {
+            x: pinkyMcp.x - wrist.x,
+            y: pinkyMcp.y - wrist.y,
+            z: pinkyMcp.z - wrist.z
         };
         
-        // Calculate cross product (2D)
-        const cross = indexToPinky.x * indexToThumb.y - indexToPinky.y * indexToThumb.x;
+        // Cross product for normal
+        const normal = {
+            x: v1.y * v2.z - v1.z * v2.y,
+            y: v1.z * v2.x - v1.x * v2.z,
+            z: v1.x * v2.y - v1.y * v2.x
+        };
         
-        // Determine if left or right hand
-        const isLeftHand = indexMcp.x > pinkyMcp.x;
-        
-        // For palm view:
-        // - Right hand: thumb should be on the left side of the index-pinky line (negative cross)
-        // - Left hand: thumb should be on the right side of the index-pinky line (positive cross)
-        // Check thumb side for both hands
-        const thumbSideCorrect = isLeftHand ? cross > 0 : cross < 0;
+        // For left hand, the normal should point away from camera (positive z)
+        // For right hand, the normal should point away from camera (negative z) when showing palm
+        const normalCheck = isLeftHand ? normal.z > 0 : normal.z < 0;
         
         // Method 2: Knuckle prominence check
         // When viewing the back of hand, knuckles (MCPs) are more prominent (closer to camera)
@@ -1434,8 +1455,18 @@ class DotProjector {
             thumbAngleCorrect
         ].filter(check => check).length;
         
-        // Use stricter threshold to prevent back of hand detection
-        return passedChecks >= 4; // At least 4 out of 6 checks must pass
+        // Simplified approach: use depth and normal checks which are most reliable
+        if (this.debug) {
+            console.log('Palm orientation:', {
+                hand: isLeftHand ? 'LEFT' : 'RIGHT',
+                depthCheck,
+                normalCheck,
+                handedness: this.handedness
+            });
+        }
+        
+        // Both checks must pass for palm detection
+        return depthCheck && normalCheck;
     }
     
     /**
@@ -1806,7 +1837,9 @@ class DotProjector {
         
         // Show IR camera selector when IR mode is on
         const irSelector = document.getElementById('irCameraSelectorWrapper');
-        irSelector.style.display = this.irMode ? 'flex' : 'none';
+        if (irSelector) {
+            irSelector.style.display = this.irMode ? 'flex' : 'none';
+        }
         
         if (this.irMode) {
             // Change to IR visualization colors
@@ -2579,6 +2612,11 @@ class DotProjector {
             await this.detectCameras();
         }
         
+        // Ensure camera selectors exist if we have multiple cameras
+        if (this.availableCameras.length > 1 && !document.getElementById('cameraSelector')) {
+            this.addCameraSelector();
+        }
+        
         // Populate camera selectors
         const rgbSelect = document.getElementById('rgbCameraSelect');
         const irSelect = document.getElementById('irCameraSelect');
@@ -2588,8 +2626,19 @@ class DotProjector {
         irSelect.innerHTML = '<option value="default">Default Camera</option>';
         
         // Add available cameras
-        this.availableCameras.forEach(camera => {
-            const label = camera.label || `Camera ${camera.deviceId.substring(0, 8)}`;
+        this.availableCameras.forEach((camera, index) => {
+            // Create a meaningful label for the camera
+            let label = camera.label || `Camera ${index + 1}`;
+            
+            // Add device ID suffix if label is generic
+            if (!camera.label || camera.label === '') {
+                label = `Camera ${index + 1} (${camera.deviceId.substring(0, 8)}...)`;
+            }
+            
+            // Check if this camera is likely an IR camera
+            const lowerLabel = label.toLowerCase();
+            const isLikelyIR = lowerLabel.includes('ir') || lowerLabel.includes('infrared') || 
+                              lowerLabel.includes('depth') || lowerLabel.includes('windows hello');
             
             // RGB camera option
             const rgbOption = document.createElement('option');
@@ -2603,7 +2652,7 @@ class DotProjector {
             // IR camera option
             const irOption = document.createElement('option');
             irOption.value = camera.deviceId;
-            irOption.textContent = label;
+            irOption.textContent = isLikelyIR ? `${label} (IR)` : label;
             if (camera.deviceId === this.selectedIRCameraId) {
                 irOption.selected = true;
             }
@@ -2639,27 +2688,9 @@ class DotProjector {
         
         this.animationFrame++;
         
-        // Animate dots when no palm is detected
+        // Simple idle state - no animation when no hand detected
         if (!this.palmData && this.instancedDots) {
-            const matrix = new THREE.Matrix4();
-            const rotation = new THREE.Euler();
-            const scale = new THREE.Vector3(1, 1, 1);
-            const time = this.animationFrame * 0.01;
-            
-            this.dotPositions.forEach((dotPos, index) => {
-                const zPos = Math.sin(time + this.dotPhases[index]) * 2;
-                rotation.x = time;
-                rotation.y = time;
-                
-                matrix.compose(
-                    new THREE.Vector3(dotPos.x, dotPos.y, zPos),
-                    new THREE.Quaternion().setFromEuler(rotation),
-                    scale
-                );
-                this.instancedDots.setMatrixAt(index, matrix);
-            });
-            
-            this.instancedDots.instanceMatrix.needsUpdate = true;
+            // Dots stay in place - no movement
         }
         
         this.renderer.render(this.scene, this.camera);
@@ -2672,24 +2703,14 @@ class DotProjector {
         if (!this.instancedDots) return;
         
         const matrix = new THREE.Matrix4();
-        const rotation = new THREE.Euler();
         const scale = new THREE.Vector3(1, 1, 1);
         const color = new THREE.Color();
         const baseColor = this.irMode ? 0xff00ff : 0x00b366;
         
         this.dotPositions.forEach((dotPos, index) => {
-            // Reset to original position with idle animation
-            const phase = this.dotPhases[index];
-            const idleWave = Math.sin(this.animationFrame * 0.01 + phase) * 2;
-            
-            rotation.x = this.animationFrame * 0.01;
-            rotation.y = this.animationFrame * 0.01;
-            
-            matrix.compose(
-                new THREE.Vector3(dotPos.x, dotPos.y, dotPos.z + idleWave),
-                new THREE.Quaternion().setFromEuler(rotation),
-                scale
-            );
+            // Reset to original position - no animation
+            matrix.setPosition(dotPos.x, dotPos.y, dotPos.z);
+            matrix.scale(scale);
             this.instancedDots.setMatrixAt(index, matrix);
             
             // Reset color to base color
