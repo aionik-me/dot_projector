@@ -240,9 +240,10 @@ class DotProjector {
             },
             vertexShader: `
                 attribute float size;
+                uniform vec3 color;
                 varying vec3 vColor;
                 void main() {
-                    vColor = vec3(0.0, 1.0, 0.5);
+                    vColor = color;
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                     // Better distance-based scaling
                     float distance = length(mvPosition.xyz);
@@ -701,12 +702,27 @@ class DotProjector {
         let handColor;
         if (distance > 45) {
             handColor = 0xff0000; // Red - too far
+        } else if (distance < 8) {
+            handColor = 0xff0000; // Red - too close
         } else if (distance >= 8 && distance <= 45 && alignment >= 0.3 && 
-                   isPalmOriented && isFlatEnough && fingersExtended && 
+                   isPalmOriented && isFlatEnough && 
                    Math.abs(rotation) <= 30) {
-            handColor = 0x00ff88; // Green - perfect position
+            handColor = 0x00ff00; // Bright green - perfect position
         } else {
             handColor = 0xffff00; // Yellow - needs adjustment
+        }
+        
+        // Log status for debugging
+        if (this.debug) {
+            console.log('Hand status:', {
+                distance,
+                alignment,
+                isPalmOriented,
+                isFlatEnough,
+                fingersExtended,
+                rotation: Math.abs(rotation),
+                color: handColor.toString(16)
+            });
         }
         
         // Update line color
@@ -748,11 +764,11 @@ class DotProjector {
             const distanceScale = Math.max(0.5, Math.min(1.5, 1.0 - distance / 50));
             
             if ([4, 8, 12, 16, 20].includes(idx)) {
-                pointSizes[idx] = 5 * distanceScale; // Fingertips (reduced from 6)
+                pointSizes[idx] = 4 * distanceScale; // Fingertips
             } else if (idx === 0) {
-                pointSizes[idx] = 7 * distanceScale; // Wrist (reduced from 8)
+                pointSizes[idx] = 5 * distanceScale; // Wrist
             } else {
-                pointSizes[idx] = 3.5 * distanceScale; // Other points (reduced from 4)
+                pointSizes[idx] = 3 * distanceScale; // Other points
             }
         });
         
@@ -1111,12 +1127,32 @@ class DotProjector {
      * @returns {number} Distance in centimeters (8-45cm range)
      */
     calculateDistance(palmCenter) {
-        // Convert z-coordinate to distance in cm
-        // z is typically between -0.3 (very close) and 0.2 (far)
-        // Adjusted for closer hand support
-        const normalizedZ = Math.max(-0.3, Math.min(0.2, palmCenter.z));
-        // Map to distance: very close (-0.3) = 5cm, far (0.2) = 45cm
-        return Math.round(25 + normalizedZ * 80);
+        // Calculate distance based on palm size on screen
+        // When hand is close, it takes up more screen space
+        const palmArea = this.calculatePalmArea(this.palmData);
+        
+        if (this.debug) {
+            console.log('Palm area:', palmArea.toFixed(4));
+        }
+        
+        // Map palm area to distance:
+        // Large palm area (>0.05) = very close (<20cm)
+        // Medium palm area (0.01-0.05) = good distance (20-45cm)
+        // Small palm area (<0.01) = too far (>45cm)
+        
+        let distance;
+        if (palmArea > 0.08) {
+            distance = 5; // Very close
+        } else if (palmArea > 0.05) {
+            distance = Math.round(5 + (0.08 - palmArea) * 500); // 5-20cm
+        } else if (palmArea > 0.01) {
+            distance = Math.round(20 + (0.05 - palmArea) * 625); // 20-45cm
+        } else {
+            // Small palm area - far away
+            distance = Math.round(45 + (0.01 - palmArea) * 4000); // 45-85cm
+        }
+        
+        return distance;
     }
     
     calculateAlignment(landmarks) {
@@ -1756,14 +1792,12 @@ class DotProjector {
         }
         
         if (this.irMode) {
-            // Change to IR visualization colors
-            this.handLines.material.color.setHex(0xff00ff); // Purple for IR
-            this.handPoints.material.uniforms.color.value.setHex(0xff00ff);
+            // Change dot colors for IR mode
             this.instancedDots.material.color.setHex(0x8800ff);
             this.instancedDots.material.emissive.setHex(0x440088);
             
-            // Apply filter only to the canvas, not the container
-            this.renderer.domElement.style.filter = 'hue-rotate(270deg) saturate(1.5)';
+            // Don't apply filter - it messes up the hand tracking colors
+            // this.renderer.domElement.style.filter = 'hue-rotate(270deg) saturate(1.5)';
             
             // Switch to IR camera if scanning
             if (this.isScanning) {
@@ -1771,9 +1805,7 @@ class DotProjector {
                 setTimeout(() => this.startScanning(), 500);
             }
         } else {
-            // Reset to normal colors
-            this.handLines.material.color.setHex(0x00ff88);
-            this.handPoints.material.uniforms.color.value.setHex(0x00ff88);
+            // Reset dot colors for normal mode
             this.instancedDots.material.color.setHex(0x00b366);
             this.instancedDots.material.emissive.setHex(0x005933);
             
