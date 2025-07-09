@@ -1,5 +1,7 @@
 # DOT Projector - Complete API Documentation
 
+**Version 1.1.0** - Updated with simultaneous capture, null safety, and hand stabilization features.
+
 ## Table of Contents
 1. [Class Overview](#class-overview)
 2. [Properties](#properties)
@@ -8,6 +10,7 @@
 5. [Data Structures](#data-structures)
 6. [Integration Examples](#integration-examples)
 7. [Advanced Customization](#advanced-customization)
+8. [Version History](#version-history)
 
 ## Class Overview
 
@@ -35,6 +38,9 @@ this.hands              // MediaPipe Hands instance
 this.palmData           // Current hand landmarks (21 points)
 this.videoElement       // Video element for camera feed
 this.isScanning         // Boolean: scanning state
+this.handedness         // 'Left' or 'Right' hand detection
+this.landmarkHistory    // Array of recent frames for stabilization
+this.historySize        // Number of frames to average (default: 5)
 ```
 
 ### Capture System
@@ -238,9 +244,12 @@ calculateDistance(palmCenter)
 // Parameters:
 //   palmCenter: {x, y, z} object
 // Returns: number (cm)
-// Converts Z-coordinate to distance
-// Range: 8-45cm
-// Formula: 20 + normalizedZ * 100
+// NOW USES: Palm screen area calculation
+// Range: 5-85cm with dynamic thresholds:
+//   - Area > 0.08: 5cm (very close)
+//   - Area > 0.05: 5-20cm range
+//   - Area > 0.01: 20-45cm range
+//   - Area < 0.01: 45-85cm (far)
 ```
 
 #### `calculateAlignment(landmarks)`
@@ -329,6 +338,10 @@ updateRotationIndicator(rotation)
 ```javascript
 capture()
 // Main capture method
+// NEW in v1.1.0:
+//   - Re-validates hand state before capture
+//   - Captures palm data snapshot for async safety
+//   - Prevents closed fist captures
 // Routes to appropriate capture mode
 // Handles feedback and storage
 // Updates capture history
@@ -337,42 +350,47 @@ capture()
 #### `captureDualMode()`
 ```javascript
 async captureDualMode()
-// Captures both IR and RGB images
-// Sequence:
-//   1. Switch to IR camera (if different)
-//   2. Capture IR with vein patterns
-//   3. Switch to RGB camera
-//   4. Capture regular image
-//   5. Return to original camera
-// Stores both images with metadata
+// NEW in v1.1.0: Simultaneous capture
+// Captures both IR and RGB images from SAME frame
+// Process:
+//   1. Create separate canvas for IR
+//   2. Render both modes simultaneously
+//   3. Convert to blobs in parallel
+//   4. Store with paired metadata
+// No camera switching delay
+// Perfect synchronization
 ```
 
-#### `createRegularCapture(ctx, w, h)`
+#### `createRegularCapture(ctx, w, h, palmData)`
 ```javascript
-createRegularCapture(ctx, w, h)
+createRegularCapture(ctx, w, h, palmData = null)
 // Parameters:
 //   ctx: Canvas 2D context
 //   w: Canvas width
 //   h: Canvas height
+//   palmData: Optional landmarks (NEW in v1.1.0)
 // Creates RGB capture with:
 // - Portrait blur effect
 // - Biometric overlay
 // - Clean background
 // - Scan metadata
+// Now accepts palmData for synchronized capture
 ```
 
-#### `createIRVeinCapture(ctx, w, h)`
+#### `createIRVeinCapture(ctx, w, h, palmData)`
 ```javascript
-createIRVeinCapture(ctx, w, h)
+createIRVeinCapture(ctx, w, h, palmData = null)
 // Parameters:
 //   ctx: Canvas 2D context
 //   w: Canvas width  
 //   h: Canvas height
+//   palmData: Optional landmarks (NEW in v1.1.0)
 // Creates IR capture with:
 // - Dark background
 // - Procedural vein patterns
 // - Heat signatures
 // - Temperature readings
+// Now accepts palmData for synchronized capture
 ```
 
 #### `showEnhancedCaptureFeedback()`
@@ -705,6 +723,22 @@ scanner.loadCaptures = async function() {
    - Validate captures server-side
    - Sanitize stored data
    - Use HTTPS for camera access
+
+## Version History
+
+### v1.1.0 (Current)
+- **Simultaneous Capture**: IR and RGB from same frame
+- **Null Safety**: Fixed async palm data references
+- **Hand Stabilization**: Frame averaging for smooth tracking
+- **Distance Calculation**: Based on palm screen area
+- **Capture Validation**: Re-validates before capture
+- **Method Signatures**: Added optional palmData parameters
+
+### v1.0.0
+- Initial release with core features
+- Sequential IR/RGB capture
+- Basic hand tracking
+- WebGL optimization
 
 ---
 

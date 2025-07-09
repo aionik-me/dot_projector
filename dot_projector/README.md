@@ -1,6 +1,11 @@
 # DOT Projector - Palm Biometric Scanner Simulation
 
-A sophisticated web-based palm biometric scanner simulation featuring real-time hand tracking, 3D DOT projection visualization, IR vein pattern capture, and multi-camera support.
+A sophisticated web-based palm biometric scanner simulation featuring real-time hand tracking, 3D DOT projection visualization, simultaneous IR vein pattern capture, and multi-camera support.
+
+![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![WebGL](https://img.shields.io/badge/WebGL-2.0-red.svg)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-Hands-orange.svg)
 
 ## Table of Contents
 - [Overview](#overview)
@@ -29,18 +34,22 @@ The DOT Projector simulates a professional biometric palm scanner using:
 - ✅ Real-time palm tracking with 21 3D landmarks
 - ✅ 3D DOT grid projection with distance-based interaction
 - ✅ Automatic palm capture with position validation
-- ✅ IR vein pattern simulation
-- ✅ Multi-camera support with hot-swapping
+- ✅ Simultaneous IR + RGB capture mode
+- ✅ Procedural vein pattern generation
+- ✅ Multi-camera support with separate IR camera selection
 - ✅ Local storage gallery with capture history
-- ✅ WebGL-optimized rendering
+- ✅ WebGL-optimized rendering with instanced dots
+- ✅ Hand stabilization for reduced jitter
+- ✅ Dynamic hand color coding (red/yellow/green)
 
 ### Hand Position Validation
-- Distance checking (8-45cm)
-- Palm orientation detection
-- Hand rotation guidance
-- Finger extension validation
-- Flatness detection
-- Center alignment
+- Distance checking based on palm screen area
+- Palm orientation detection (front/back)
+- Hand rotation guidance with visual indicators
+- Finger extension validation (4+ fingers required)
+- Flatness detection with Z-axis analysis
+- Center alignment with edge margin detection
+- Re-validation before capture to prevent closed fist captures
 
 ## Architecture
 
@@ -65,10 +74,18 @@ dot_projector/
 
 ```bash
 # Clone the repository
-git clone [repository-url]
+git clone https://github.com/yourusername/dot_projector.git
+
+# Navigate to project directory
+cd dot_projector
 
 # Open index.html in a modern web browser
 # No build process required - runs directly in browser
+
+# For local development, use a simple HTTP server:
+python -m http.server 8000
+# or
+npx http-server
 ```
 
 ### Requirements
@@ -96,9 +113,10 @@ dotProjector.capture();
 
 ### UI Controls
 - **Start Scanning** - Begins camera and hand detection
-- **IR Mode Toggle** - Switches between RGB and IR visualization
-- **Camera Selectors** - Choose different cameras for RGB/IR
-- **View Gallery** - Browse captured images
+- **IR Mode Toggle** - Enables simultaneous IR + RGB capture
+- **View Gallery** - Browse captured images with metadata
+- **Settings** - Configure RGB and IR camera selection
+- **Capture** - Manual capture button (auto-capture also available)
 
 ## API Reference
 
@@ -369,13 +387,18 @@ scanner.selectedIRCameraId = "ir-device-id-here"; // IR camera
 
 ### Capture Flow (IR Mode)
 
+**Version 1.1.0 - Simultaneous Capture**
+- Both IR and RGB images are captured from the same video frame
+- No camera switching delay
+- Perfect synchronization between captures
+- Uses separate canvases for parallel processing
+
+**Legacy Sequential Mode (if different cameras)**
 1. Switch to IR camera
 2. Capture IR image with vein patterns
 3. Switch to RGB camera  
 4. Capture regular image
 5. Return to original camera
-
-This sequence prevents IR illumination from affecting RGB capture.
 
 ## Capture Modes
 
@@ -452,16 +475,31 @@ Requires:
    - Ensure good lighting
    - Hand fully in frame
    - Clean camera lens
+   - Check console for MediaPipe errors
 
 2. **Slow performance**
    - Check WebGL support
-   - Reduce grid size
+   - Reduce grid size in createDotPattern()
    - Close other tabs
+   - Disable debug mode
 
 3. **Camera not found**
-   - Check permissions
-   - Ensure HTTPS
+   - Check browser permissions
+   - Ensure HTTPS connection
    - Try different browser
+   - Check camera is not in use by another app
+
+4. **Captures not showing in gallery**
+   - Check browser console for errors
+   - Verify localStorage is not full
+   - Check image data URLs are valid
+   - Clear browser cache and reload
+
+5. **Hand color stays green/red**
+   - Ensure palm is flat and open
+   - Check distance (8-45cm range)
+   - Face palm directly to camera
+   - Verify good lighting conditions
 
 ### Debug Mode
 
@@ -480,15 +518,23 @@ console.log({
 });
 ```
 
-## Future Enhancements
+## Recent Updates (v1.1.0)
 
-Potential additions:
-- Real IR camera integration
-- Depth map support
-- Machine learning palm recognition
-- Server-side processing
-- Biometric matching algorithms
-- Multi-hand support
+- **Simultaneous Capture**: IR and RGB images now captured from same frame
+- **Null Safety**: Fixed async palm data references preventing crashes
+- **Capture Validation**: Re-validates hand state before capture
+- **Hand Stabilization**: Reduced jitter with frame averaging
+- **Distance Calculation**: Now based on palm screen area for better accuracy
+- **Color Feedback**: Dynamic hand coloring (red/yellow/green)
+- **Gallery Fixes**: Improved capture storage and display reliability
+
+## Known Limitations
+
+- Maximum 10 captures stored (localStorage quota)
+- Single hand tracking only
+- IR simulation (not real IR imaging)
+- No server-side storage
+- No biometric matching algorithms
 
 ## Production Deployment
 

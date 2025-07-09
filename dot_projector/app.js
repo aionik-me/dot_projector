@@ -89,14 +89,13 @@ class DotProjector {
         
         // Capture properties
         this.captures = JSON.parse(localStorage.getItem('palmCaptures') || '[]');
-        console.log('Loaded captures from localStorage:', this.captures.length);
         this.isAutoCapturing = false;
         this.perfectAlignmentTime = 0;
         this.lastCaptureTime = 0;
         this.captureCooldown = 3000; // 3 seconds between captures
         
         // Debug mode
-        this.debug = true; // Set to true for debugging
+        this.debug = false; // Set to true for debugging
         
         // IR mode
         this.irMode = false;
@@ -107,9 +106,6 @@ class DotProjector {
         this.selectedCameraId = null;
         this.selectedIRCameraId = null;
         this.hasIRCamera = false;
-        
-        // Debug mode - enable to see orientation values in console
-        this.debug = false;
         
         this.init();
     }
@@ -1101,11 +1097,9 @@ class DotProjector {
                 this.updateStatus('Open your palm fully', 'warning');
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
-                console.log('Failed hand flat check', { isHandFlat });
             } else {
                 this.updateStatus('Perfect! Hold steady', 'success');
                 this.handlePerfectAlignment();
-                console.log('All checks passed - perfect alignment');
             }
         }
     }
@@ -1132,9 +1126,6 @@ class DotProjector {
         // When hand is close, it takes up more screen space
         const palmArea = this.calculatePalmArea(this.palmData);
         
-        if (this.debug) {
-            console.log('Palm area:', palmArea.toFixed(4));
-        }
         
         // Map palm area to distance:
         // Large palm area (>0.05) = very close (<20cm)
@@ -1637,14 +1628,6 @@ class DotProjector {
         document.querySelector('.alignment-value').textContent = `${Math.round(alignment * 100)}%`;
         document.querySelector('.features-value').textContent = `${Math.round(features)}%`;
         
-        // Debug orientation (optional)
-        if (this.debug) {
-            console.log('Hand Orientation:', {
-                pitch: orientation.pitch.toFixed(1) + '°',
-                roll: orientation.roll.toFixed(1) + '°',
-                yaw: orientation.yaw.toFixed(1) + '°'
-            });
-        }
     }
     
     detectFeatures(landmarks) {
@@ -1771,7 +1754,6 @@ class DotProjector {
                         }
                     };
                     
-                    console.log('Adding capture to gallery:', captureData.id, captureData.type);
                     this.captures.unshift(captureData);
                     // Reduce max captures to prevent quota issues
                     if (this.captures.length > 10) {
@@ -1780,7 +1762,6 @@ class DotProjector {
                     
                     try {
                         localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
-                        console.log('Saved captures to localStorage, total:', this.captures.length);
                     } catch (e) {
                         if (e.name === 'QuotaExceededError') {
                             console.warn('Storage quota exceeded, clearing old captures');
@@ -1937,8 +1918,6 @@ class DotProjector {
                     };
                     
                     // Save both captures
-                    console.log('Adding IR capture to gallery:', irCapture.id);
-                    console.log('Adding regular capture to gallery:', regularCapture.id);
                     this.captures.unshift(regularCapture);
                     this.captures.unshift(irCapture);
                     // Reduce max captures to prevent quota issues
@@ -1948,7 +1927,6 @@ class DotProjector {
                     
                     try {
                         localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
-                        console.log('Saved dual captures to localStorage, total:', this.captures.length);
                     } catch (e) {
                         if (e.name === 'QuotaExceededError') {
                             console.warn('Storage quota exceeded, clearing old captures');
@@ -2046,7 +2024,6 @@ class DotProjector {
     }
     
     createIRVeinCapture(ctx, w, h, palmData = null) {
-        console.log('Creating IR vein capture');
         
         // Use passed palmData or fall back to current palmData
         const landmarks = palmData || this.palmData;
@@ -2563,8 +2540,6 @@ class DotProjector {
     showGallery() {
         const gallery = document.getElementById('captureGallery');
         const content = document.getElementById('galleryContent');
-        
-        console.log('Showing gallery with captures:', this.captures.length);
         
         content.innerHTML = '';
         
