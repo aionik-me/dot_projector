@@ -89,6 +89,7 @@ class DotProjector {
         
         // Capture properties
         this.captures = JSON.parse(localStorage.getItem('palmCaptures') || '[]');
+        console.log('Loaded captures from localStorage:', this.captures.length);
         this.isAutoCapturing = false;
         this.perfectAlignmentTime = 0;
         this.lastCaptureTime = 0;
@@ -1721,6 +1722,27 @@ class DotProjector {
             return;
         }
         
+        // Re-validate hand state before capture
+        const isHandFlat = this.checkHandFlatness(this.palmData);
+        const isPalmOriented = this.checkPalmOrientation(this.palmData);
+        
+        if (!isHandFlat) {
+            this.updateStatus('Open your palm fully', 'warning');
+            this.isAutoCapturing = false;
+            this.perfectAlignmentTime = 0;
+            return;
+        }
+        
+        if (!isPalmOriented) {
+            this.updateStatus('Face your palm to the camera', 'warning');
+            this.isAutoCapturing = false;
+            this.perfectAlignmentTime = 0;
+            return;
+        }
+        
+        // Capture current palm data to avoid null reference in async callback
+        const currentPalmData = [...this.palmData];
+        
         // Setup capture canvas
         this.captureCanvas.width = this.videoElement.videoWidth;
         this.captureCanvas.height = this.videoElement.videoHeight;
@@ -1744,11 +1766,12 @@ class DotProjector {
                         type: 'regular',
                         timestamp: new Date().toISOString(),
                         metrics: {
-                            distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
-                            alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
+                            distance: this.calculateDistance(this.calculatePalmCenter(currentPalmData)),
+                            alignment: Math.round(this.calculateAlignment(currentPalmData) * 100)
                         }
                     };
                     
+                    console.log('Adding capture to gallery:', captureData.id, captureData.type);
                     this.captures.unshift(captureData);
                     // Reduce max captures to prevent quota issues
                     if (this.captures.length > 10) {
@@ -1757,6 +1780,7 @@ class DotProjector {
                     
                     try {
                         localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                        console.log('Saved captures to localStorage, total:', this.captures.length);
                     } catch (e) {
                         if (e.name === 'QuotaExceededError') {
                             console.warn('Storage quota exceeded, clearing old captures');
@@ -1850,61 +1874,43 @@ class DotProjector {
      * @private
      */
     async captureDualMode() {
+        // Capture current palm data to avoid null reference in async operations
+        const currentPalmData = this.palmData ? [...this.palmData] : null;
+        if (!currentPalmData) {
+            this.updateStatus('No palm detected', 'error');
+            return;
+        }
+        
         const w = this.captureCanvas.width;
         const h = this.captureCanvas.height;
         const timestamp = new Date().toISOString();
         const id = Date.now();
         const metrics = {
-            distance: this.calculateDistance(this.calculatePalmCenter(this.palmData)),
-            alignment: Math.round(this.calculateAlignment(this.palmData) * 100)
+            distance: this.calculateDistance(this.calculatePalmCenter(currentPalmData)),
+            alignment: Math.round(this.calculateAlignment(currentPalmData) * 100)
         };
-        
-        // Check if we need to switch cameras
-        const needsCameraSwitch = this.selectedIRCameraId && this.selectedIRCameraId !== this.selectedCameraId;
-        
-        console.log('IR Capture Debug:', {
-            selectedCameraId: this.selectedCameraId,
-            selectedIRCameraId: this.selectedIRCameraId,
-            needsCameraSwitch,
-            availableCameras: this.availableCameras.length
-        });
         
         // Show enhanced capture feedback
         this.showEnhancedCaptureFeedback();
         
         try {
-            let irBlob, regularBlob;
+            // Create both captures from the same video frame simultaneously
             
-            if (needsCameraSwitch) {
-                // Different cameras - do the switch sequence
-                // Step 1: Switch to IR camera and capture
-                await this.switchToCamera(this.selectedIRCameraId);
-                await new Promise(resolve => setTimeout(resolve, 100)); // Allow camera to stabilize
-                
-                // Capture IR image
-                this.createIRVeinCapture(this.captureCtx, w, h);
-                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
-                
-                // Step 2: Switch back to RGB camera and capture
-                await this.switchToCamera(this.selectedCameraId);
-                await new Promise(resolve => setTimeout(resolve, 100)); // Allow camera to stabilize
-                
-                // Capture regular image
-                this.createRegularCapture(this.captureCtx, w, h);
-                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
-            } else {
-                // Same camera - just capture both modes without switching
-                // Capture IR image first
-                this.createIRVeinCapture(this.captureCtx, w, h);
-                irBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
-                
-                // Small delay to simulate mode switch
-                await new Promise(resolve => setTimeout(resolve, 50));
-                
-                // Capture regular image
-                this.createRegularCapture(this.captureCtx, w, h);
-                regularBlob = await new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8));
-            }
+            // Create a second canvas for IR capture
+            const irCanvas = document.createElement('canvas');
+            irCanvas.width = w;
+            irCanvas.height = h;
+            const irCtx = irCanvas.getContext('2d');
+            
+            // Capture both modes at the same time from the same palm data
+            this.createRegularCapture(this.captureCtx, w, h, currentPalmData);
+            this.createIRVeinCapture(irCtx, w, h, currentPalmData);
+            
+            // Convert both to blobs simultaneously
+            const [regularBlob, irBlob] = await Promise.all([
+                new Promise(resolve => this.captureCanvas.toBlob(resolve, 'image/jpeg', 0.8)),
+                new Promise(resolve => irCanvas.toBlob(resolve, 'image/jpeg', 0.8))
+            ]);
             
             // Process and save both captures
             const irReader = new FileReader();
@@ -1931,6 +1937,8 @@ class DotProjector {
                     };
                     
                     // Save both captures
+                    console.log('Adding IR capture to gallery:', irCapture.id);
+                    console.log('Adding regular capture to gallery:', regularCapture.id);
                     this.captures.unshift(regularCapture);
                     this.captures.unshift(irCapture);
                     // Reduce max captures to prevent quota issues
@@ -1940,6 +1948,7 @@ class DotProjector {
                     
                     try {
                         localStorage.setItem('palmCaptures', JSON.stringify(this.captures));
+                        console.log('Saved dual captures to localStorage, total:', this.captures.length);
                     } catch (e) {
                         if (e.name === 'QuotaExceededError') {
                             console.warn('Storage quota exceeded, clearing old captures');
@@ -1991,9 +2000,20 @@ class DotProjector {
         });
     }
     
-    createRegularCapture(ctx, w, h) {
+    createRegularCapture(ctx, w, h, palmData = null) {
+        // Use passed palmData or fall back to current palmData
+        const landmarks = palmData || this.palmData;
+        
+        // Check if palmData exists
+        if (!landmarks) {
+            console.warn('No palm data available for regular capture');
+            // Just draw the video without palm-specific processing
+            ctx.drawImage(this.videoElement, 0, 0, w, h);
+            return;
+        }
+        
         // Get palm bounds with padding for zoom
-        const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
+        const palmBounds = this.getPalmBounds(landmarks, w, h, 80);
         
         // Calculate zoom factor to fill canvas nicely
         const zoomFactorX = w / palmBounds.width;
@@ -2018,18 +2038,30 @@ class DotProjector {
         ctx.save();
         ctx.translate(translateX, translateY);
         ctx.scale(zoomFactor, zoomFactor);
-        this.drawBiometricOverlay(ctx, this.palmData, w, h);
+        this.drawBiometricOverlay(ctx, landmarks, w, h);
         ctx.restore();
         
         // Add scan effects
         this.addScanEffects(ctx, w, h, false);
     }
     
-    createIRVeinCapture(ctx, w, h) {
+    createIRVeinCapture(ctx, w, h, palmData = null) {
         console.log('Creating IR vein capture');
         
+        // Use passed palmData or fall back to current palmData
+        const landmarks = palmData || this.palmData;
+        
+        // Check if palmData exists
+        if (!landmarks) {
+            console.warn('No palm data available for IR capture');
+            // Just draw dark background
+            ctx.fillStyle = '#1a001a';
+            ctx.fillRect(0, 0, w, h);
+            return;
+        }
+        
         // Get palm bounds with padding for zoom
-        const palmBounds = this.getPalmBounds(this.palmData, w, h, 80);
+        const palmBounds = this.getPalmBounds(landmarks, w, h, 80);
         
         // Calculate zoom factor
         const zoomFactorX = w / palmBounds.width;
@@ -2055,10 +2087,10 @@ class DotProjector {
         ctx.filter = 'none';
         
         // Draw simulated vein patterns
-        this.drawVeinPattern(ctx, this.palmData, w, h);
+        this.drawVeinPattern(ctx, landmarks, w, h);
         
         // Draw IR biometric overlay
-        this.drawIRBiometricOverlay(ctx, this.palmData, w, h);
+        this.drawIRBiometricOverlay(ctx, landmarks, w, h);
         
         ctx.restore();
         
@@ -2283,6 +2315,19 @@ class DotProjector {
     // Removed applyEdgeSoftening - no longer needed with portrait blur approach
     
     getPalmBounds(landmarks, w, h, padding) {
+        if (!landmarks || landmarks.length === 0) {
+            // Return default bounds if no landmarks
+            return {
+                left: w * 0.2,
+                top: h * 0.2,
+                width: w * 0.6,
+                height: h * 0.6,
+                centerX: w * 0.5,
+                centerY: h * 0.5,
+                radius: Math.min(w, h) * 0.3
+            };
+        }
+        
         let minX = 1, maxX = 0, minY = 1, maxY = 0;
         
         landmarks.forEach(landmark => {
@@ -2518,6 +2563,8 @@ class DotProjector {
     showGallery() {
         const gallery = document.getElementById('captureGallery');
         const content = document.getElementById('galleryContent');
+        
+        console.log('Showing gallery with captures:', this.captures.length);
         
         content.innerHTML = '';
         
