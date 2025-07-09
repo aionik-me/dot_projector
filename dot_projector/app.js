@@ -59,6 +59,7 @@ class DotProjector {
         this.dotPhases = [];
         this.palmData = null;
         this.isScanning = false;
+        this.isProcessingStart = false; // Prevent double-click on start button
         this.animationFrame = 0;
         
         this.hands = null;
@@ -66,6 +67,10 @@ class DotProjector {
         this.videoElement = document.getElementById('inputVideo');
         this.captureCanvas = document.getElementById('captureCanvas');
         this.captureCtx = this.captureCanvas.getContext('2d');
+        
+        // Hand stabilization
+        this.landmarkHistory = [];
+        this.historySize = 5; // Number of frames to average
         
         // Hand visualization properties
         this.handConnections = [
@@ -275,6 +280,15 @@ class DotProjector {
      * @private
      */
     setupHandTracking() {
+        // MediaPipe exports to window object in browser
+        const Hands = window.Hands;
+        
+        if (!Hands) {
+            console.error('MediaPipe Hands not loaded. Please ensure all scripts are loaded.');
+            this.updateStatus('Error: Hand tracking library not loaded', 'error');
+            return;
+        }
+        
         this.hands = new Hands({
             locateFile: (file) => {
                 return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
@@ -297,6 +311,8 @@ class DotProjector {
         document.getElementById('galleryBtn').addEventListener('click', () => this.showGallery());
         document.getElementById('closeGalleryBtn').addEventListener('click', () => this.hideGallery());
         document.getElementById('irModeBtn').addEventListener('click', () => this.toggleIRMode());
+        document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
+        document.getElementById('closeSettingsBtn').addEventListener('click', () => this.hideSettings());
         
         window.addEventListener('resize', () => {
             this.camera.aspect = this.canvas.clientWidth / this.canvas.clientHeight;
@@ -314,17 +330,33 @@ class DotProjector {
      */
     async detectCameras() {
         try {
-            // Request initial permissions to get camera labels
-            await navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-                stream.getTracks().forEach(track => track.stop());
-            });
+            // First enumerate devices to see what's available
+            let devices = await navigator.mediaDevices.enumerateDevices();
+            let cameras = devices.filter(device => device.kind === 'videoinput');
             
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            this.availableCameras = devices.filter(device => device.kind === 'videoinput');
+            // If camera labels are empty (permissions not granted yet), request permission
+            if (cameras.length === 0 || (cameras[0].label === '' && cameras[0].deviceId !== '')) {
+                console.log('Requesting camera permissions...');
+                // Request camera access to get proper labels
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true,
+                    audio: false 
+                });
+                
+                // Stop the stream immediately
+                stream.getTracks().forEach(track => track.stop());
+                
+                // Re-enumerate devices now that we have permissions
+                devices = await navigator.mediaDevices.enumerateDevices();
+                cameras = devices.filter(device => device.kind === 'videoinput');
+            }
+            
+            this.availableCameras = cameras;
+            console.log('Detected cameras:', this.availableCameras);
             
             // Check for IR camera (common labels)
             this.hasIRCamera = this.availableCameras.some(camera => {
-                const label = camera.label.toLowerCase();
+                const label = (camera.label || '').toLowerCase();
                 return label.includes('ir') || label.includes('infrared') || 
                        label.includes('depth') || label.includes('windows hello');
             });
@@ -332,6 +364,10 @@ class DotProjector {
             // If multiple cameras, add camera selector
             if (this.availableCameras.length > 1) {
                 this.addCameraSelector();
+            } else if (this.availableCameras.length === 1) {
+                // Set the single camera as default
+                this.selectedCameraId = this.availableCameras[0].deviceId;
+                this.selectedIRCameraId = this.availableCameras[0].deviceId;
             }
             
             // Show IR mode button if IR camera detected
@@ -342,6 +378,8 @@ class DotProjector {
             return this.availableCameras;
         } catch (error) {
             console.error('Error detecting cameras:', error);
+            // Show user-friendly error message
+            this.updateStatus('Camera access denied or not available', 'error');
             return [];
         }
     }
@@ -424,15 +462,17 @@ class DotProjector {
         irSelectorWrapper.appendChild(irSelector);
         controls.insertBefore(irSelectorWrapper, selectorWrapper.nextSibling);
         
-        // Set defaults
-        this.selectedCameraId = this.availableCameras[0].deviceId;
-        if (!this.selectedIRCameraId) {
-            this.selectedIRCameraId = this.availableCameras[0].deviceId;
+        // Set defaults only if cameras are available
+        if (this.availableCameras.length > 0) {
+            this.selectedCameraId = this.availableCameras[0].deviceId;
+            if (!this.selectedIRCameraId) {
+                this.selectedIRCameraId = this.availableCameras[0].deviceId;
+            }
+            
+            // Set selector values
+            selector.value = this.selectedCameraId;
+            irSelector.value = this.selectedIRCameraId;
         }
-        
-        // Set selector values
-        selector.value = this.selectedCameraId;
-        irSelector.value = this.selectedIRCameraId;
     }
     
     /**
@@ -443,14 +483,28 @@ class DotProjector {
      * @public
      */
     async startScanning() {
+        // Early return if already processing
+        if (this.isProcessingStart) return;
+        
         if (this.isScanning) {
             this.stopScanning();
             return;
         }
         
-        // Detect cameras on first scan
-        if (this.availableCameras.length === 0) {
-            await this.detectCameras();
+        // Prevent double clicks
+        this.isProcessingStart = true;
+        
+        try {
+            // Detect cameras on first scan
+            if (this.availableCameras.length === 0) {
+                await this.detectCameras();
+            
+            // Check if still no cameras after detection
+            if (this.availableCameras.length === 0) {
+                this.updateStatus('No cameras found', 'error');
+                this.isScanning = false;
+                return;
+            }
         }
         
         try {
@@ -480,23 +534,32 @@ class DotProjector {
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
             this.videoElement.srcObject = stream;
             
-            this.videoElement.onloadedmetadata = () => {
-                this.videoElement.play();
-                
-                // Enable IR mode after camera starts (prevents delay)
-                if (!this.irMode) {
-                    this.toggleIRMode();
-                }
-                
-                this.updateStatus('Detecting hands...', 'scanning');
-                this.detectHand();
-            };
+            // Ensure video element is ready
+            await new Promise((resolve) => {
+                this.videoElement.onloadedmetadata = () => {
+                    resolve();
+                };
+            });
+            
+            // Play the video
+            await this.videoElement.play();
+            
+            // Enable IR mode after camera starts (prevents delay)
+            if (!this.irMode) {
+                this.toggleIRMode();
+            }
+            
+            this.updateStatus('Detecting hands...', 'scanning');
+            this.detectHand();
             
             // Guidance is already shown above
         } catch (error) {
             console.error('Camera access error:', error);
             this.updateStatus('Camera access denied', 'error');
             this.stopScanning();
+        } finally {
+            // Reset processing flag
+            this.isProcessingStart = false;
         }
     }
     
@@ -517,7 +580,7 @@ class DotProjector {
     }
     
     async detectHand() {
-        if (!this.isScanning) return;
+        if (!this.isScanning || !this.hands) return;
         
         if (this.videoElement.readyState === 4) {
             await this.hands.send({ image: this.videoElement });
@@ -537,7 +600,17 @@ class DotProjector {
      */
     onHandResults(results) {
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            this.palmData = results.multiHandLandmarks[0];
+            const rawLandmarks = results.multiHandLandmarks[0];
+            
+            // Add to history for stabilization
+            this.landmarkHistory.push(rawLandmarks);
+            if (this.landmarkHistory.length > this.historySize) {
+                this.landmarkHistory.shift();
+            }
+            
+            // Apply stabilization by averaging recent frames
+            this.palmData = this.stabilizeLandmarks(this.landmarkHistory);
+            
             // Store handedness info if available
             if (results.multiHandedness && results.multiHandedness.length > 0) {
                 this.handedness = results.multiHandedness[0].label;
@@ -551,6 +624,7 @@ class DotProjector {
         } else {
             this.palmData = null;
             this.handedness = null;
+            this.landmarkHistory = []; // Clear history when hand is lost
             this.updateStatus('Place your palm in view', 'warning');
             // Show guide overlay when no hand is detected
             document.getElementById('guidanceOverlay').style.opacity = '1';
@@ -558,7 +632,43 @@ class DotProjector {
             // Hide hand visualization
             this.handLines.visible = false;
             this.handPoints.visible = false;
+            
+            // Reset dot field when hand is removed
+            this.resetDotField();
         }
+    }
+    
+    /**
+     * Stabilize landmarks by averaging recent frames
+     * Reduces jitter and provides smoother tracking
+     */
+    stabilizeLandmarks(history) {
+        if (history.length === 0) return null;
+        if (history.length === 1) return history[0];
+        
+        // Create averaged landmarks
+        const stabilized = [];
+        for (let i = 0; i < 21; i++) {
+            let x = 0, y = 0, z = 0;
+            let weight = 0;
+            
+            // Weighted average - recent frames have more weight
+            history.forEach((frame, frameIdx) => {
+                const w = (frameIdx + 1) / history.length; // Linear weight
+                x += frame[i].x * w;
+                y += frame[i].y * w;
+                z += frame[i].z * w;
+                weight += w;
+            });
+            
+            stabilized.push({
+                x: x / weight,
+                y: y / weight,
+                z: z / weight
+            });
+        }
+        
+        return stabilized;
     }
     
     updateHandVisualization(landmarks) {
@@ -568,6 +678,30 @@ class DotProjector {
         // Show rotation indicator if needed
         const rotation = this.checkHandRotation(landmarks);
         this.updateRotationIndicator(rotation);
+        
+        // Calculate validation status for color coding
+        const palmCenter = this.calculatePalmCenter(landmarks);
+        const distance = this.calculateDistance(palmCenter);
+        const alignment = this.calculateAlignment(landmarks);
+        const isPalmOriented = this.checkPalmOrientation(landmarks);
+        const isFlatEnough = this.checkHandFlatness(landmarks);
+        const fingersExtended = this.checkFingerExtension(landmarks);
+        
+        // Determine hand color based on status
+        let handColor;
+        if (distance > 45) {
+            handColor = 0xff0000; // Red - too far
+        } else if (distance >= 8 && distance <= 45 && alignment >= 0.3 && 
+                   isPalmOriented && isFlatEnough && fingersExtended && 
+                   Math.abs(rotation) <= 30) {
+            handColor = 0x00ff88; // Green - perfect position
+        } else {
+            handColor = 0xffff00; // Yellow - needs adjustment
+        }
+        
+        // Update line color
+        this.handLines.material.color.setHex(handColor);
+        this.handPoints.material.color.setHex(handColor);
         
         // Update line positions
         const linePositions = this.handLines.geometry.attributes.position.array;
@@ -787,33 +921,69 @@ class DotProjector {
                 Math.pow(dotPos.y - palm3D.y, 2)
             );
             
-            // Calculate influence based on hand landmarks
+            // Calculate influence based on hand landmarks with enhanced finger interaction
             let maxInfluence = 0;
-            landmarks.forEach(landmark => {
+            let closestLandmarkIdx = -1;
+            let minDistance = Infinity;
+            
+            landmarks.forEach((landmark, idx) => {
                 const landmarkX = (landmark.x - 0.5) * 60;
                 const landmarkY = -(landmark.y - 0.5) * 60;
+                const landmarkZ = -landmark.z * 50;
+                
+                // 3D distance for better depth perception
                 const dist = Math.sqrt(
                     Math.pow(dotPos.x - landmarkX, 2) + 
-                    Math.pow(dotPos.y - landmarkY, 2)
+                    Math.pow(dotPos.y - landmarkY, 2) +
+                    Math.pow(dotPos.z - landmarkZ, 2) * 0.2
                 );
-                const influence = Math.max(0, 1 - dist / 20); // Increased influence radius
-                maxInfluence = Math.max(maxInfluence, influence);
+                
+                // Different influence ranges for different landmarks
+                let influenceRadius = 15;
+                if ([4, 8, 12, 16, 20].includes(idx)) {
+                    // Fingertips have stronger influence
+                    influenceRadius = 18;
+                } else if (idx === 0 || idx === 9) {
+                    // Wrist and palm center
+                    influenceRadius = 20;
+                }
+                
+                const influence = Math.max(0, 1 - dist / influenceRadius);
+                if (influence > maxInfluence) {
+                    maxInfluence = influence;
+                    closestLandmarkIdx = idx;
+                    minDistance = dist;
+                }
             });
             
-            // Create ripple effect from palm
-            const waveOffset = Math.sin(this.animationFrame * 0.02 + this.dotPhases[index] - distToPalm * 0.1) * 3;
+            // Enhanced wave effects based on landmark type
+            let waveOffset = 0;
+            let pulseSpeed = 0.02;
             
-            // Z position based on proximity to hand
-            const zPos = dotPos.z + waveOffset * maxInfluence + palm3D.z * maxInfluence * 0.1;
+            if (closestLandmarkIdx >= 0) {
+                if ([4, 8, 12, 16, 20].includes(closestLandmarkIdx)) {
+                    // Fingertips create rapid pulses
+                    pulseSpeed = 0.04;
+                    waveOffset = Math.sin(this.animationFrame * pulseSpeed + minDistance * 0.3) * 5 * maxInfluence;
+                } else {
+                    // Palm creates smoother waves
+                    waveOffset = Math.sin(this.animationFrame * pulseSpeed + this.dotPhases[index] - distToPalm * 0.1) * 3;
+                }
+            }
             
-            // Set scale based on influence
-            const scaleValue = 1 + maxInfluence * 0.8;
+            // Enhanced Z position with better interaction
+            const zInfluence = maxInfluence * maxInfluence; // Squared for more dramatic effect
+            const zPos = dotPos.z + waveOffset + palm3D.z * zInfluence * 0.15;
+            
+            // Dynamic scale with better response
+            const scaleValue = 1 + zInfluence * 1.5;
             scale.set(scaleValue, scaleValue, scaleValue);
             
-            // Set rotation for dynamic effect
+            // Enhanced rotation for dynamic effect
             if (maxInfluence > 0) {
-                rotation.x = this.animationFrame * 0.02 * maxInfluence;
-                rotation.y = this.animationFrame * 0.02 * maxInfluence;
+                rotation.x = this.animationFrame * 0.03 * maxInfluence;
+                rotation.y = this.animationFrame * 0.03 * maxInfluence;
+                rotation.z = Math.sin(this.animationFrame * 0.02) * maxInfluence * 0.3;
             } else {
                 rotation.set(0, 0, 0);
             }
@@ -1264,8 +1434,8 @@ class DotProjector {
             thumbAngleCorrect
         ].filter(check => check).length;
         
-        // Use same threshold for both hands
-        return passedChecks >= 3; // At least 3 out of 6 checks must pass
+        // Use stricter threshold to prevent back of hand detection
+        return passedChecks >= 4; // At least 4 out of 6 checks must pass
     }
     
     /**
@@ -2400,6 +2570,70 @@ class DotProjector {
         this.showGallery(); // Refresh gallery
     }
     
+    /**
+     * Show camera settings modal
+     */
+    async showSettings() {
+        // Ensure cameras are detected first
+        if (this.availableCameras.length === 0) {
+            await this.detectCameras();
+        }
+        
+        // Populate camera selectors
+        const rgbSelect = document.getElementById('rgbCameraSelect');
+        const irSelect = document.getElementById('irCameraSelect');
+        
+        // Clear existing options
+        rgbSelect.innerHTML = '<option value="default">Default Camera</option>';
+        irSelect.innerHTML = '<option value="default">Default Camera</option>';
+        
+        // Add available cameras
+        this.availableCameras.forEach(camera => {
+            const label = camera.label || `Camera ${camera.deviceId.substring(0, 8)}`;
+            
+            // RGB camera option
+            const rgbOption = document.createElement('option');
+            rgbOption.value = camera.deviceId;
+            rgbOption.textContent = label;
+            if (camera.deviceId === this.selectedCameraId) {
+                rgbOption.selected = true;
+            }
+            rgbSelect.appendChild(rgbOption);
+            
+            // IR camera option
+            const irOption = document.createElement('option');
+            irOption.value = camera.deviceId;
+            irOption.textContent = label;
+            if (camera.deviceId === this.selectedIRCameraId) {
+                irOption.selected = true;
+            }
+            irSelect.appendChild(irOption);
+        });
+        
+        // Add change listeners
+        rgbSelect.onchange = (e) => {
+            this.selectedCameraId = e.target.value === 'default' ? null : e.target.value;
+            // If scanning, restart with new camera
+            if (this.isScanning) {
+                this.stopScanning();
+                setTimeout(() => this.startScanning(), 100);
+            }
+        };
+        
+        irSelect.onchange = (e) => {
+            this.selectedIRCameraId = e.target.value === 'default' ? null : e.target.value;
+        };
+        
+        document.getElementById('settingsModal').style.display = 'flex';
+    }
+    
+    /**
+     * Hide camera settings modal
+     */
+    hideSettings() {
+        document.getElementById('settingsModal').style.display = 'none';
+    }
+    
     animate() {
         requestAnimationFrame(() => this.animate());
         
@@ -2430,6 +2664,50 @@ class DotProjector {
         
         this.renderer.render(this.scene, this.camera);
     }
+    
+    /**
+     * Reset dot field to idle state
+     */
+    resetDotField() {
+        if (!this.instancedDots) return;
+        
+        const matrix = new THREE.Matrix4();
+        const rotation = new THREE.Euler();
+        const scale = new THREE.Vector3(1, 1, 1);
+        const color = new THREE.Color();
+        const baseColor = this.irMode ? 0xff00ff : 0x00b366;
+        
+        this.dotPositions.forEach((dotPos, index) => {
+            // Reset to original position with idle animation
+            const phase = this.dotPhases[index];
+            const idleWave = Math.sin(this.animationFrame * 0.01 + phase) * 2;
+            
+            rotation.x = this.animationFrame * 0.01;
+            rotation.y = this.animationFrame * 0.01;
+            
+            matrix.compose(
+                new THREE.Vector3(dotPos.x, dotPos.y, dotPos.z + idleWave),
+                new THREE.Quaternion().setFromEuler(rotation),
+                scale
+            );
+            this.instancedDots.setMatrixAt(index, matrix);
+            
+            // Reset color to base color
+            color.setHex(baseColor);
+            this.instancedDots.setColorAt(index, color);
+        });
+        
+        this.instancedDots.instanceMatrix.needsUpdate = true;
+        this.instancedDots.instanceColor.needsUpdate = true;
+    }
 }
 
-const dotProjector = new DotProjector();
+// Initialize the app when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        window.dotProjector = new DotProjector();
+    });
+} else {
+    // DOM is already loaded
+    window.dotProjector = new DotProjector();
+}

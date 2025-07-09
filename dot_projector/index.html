@@ -35,15 +35,24 @@
                                     </feMerge>
                                 </filter>
                             </defs>
-                            <path d="M200,100 Q180,120 170,150 L165,200 Q165,250 180,280 L200,300 L220,280 Q235,250 235,200 L230,150 Q220,120 200,100" 
-                                  fill="none" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <circle cx="200" cy="100" r="15" fill="none" stroke="url(#guideGradient)" stroke-width="2" opacity="0.6"/>
-                            <line x1="170" y1="150" x2="150" y2="120" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <line x1="180" y1="150" x2="170" y2="100" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <line x1="200" y1="150" x2="200" y2="80" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <line x1="220" y1="150" x2="230" y2="100" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <line x1="230" y1="150" x2="250" y2="120" stroke="url(#guideGradient)" stroke-width="2" opacity="0.4"/>
-                            <text x="200" y="380" text-anchor="middle" class="guide-text">Place palm here</text>
+                            <!-- Simple palm guide circles -->
+                            <circle cx="200" cy="200" r="80" fill="none" stroke="url(#guideGradient)" stroke-width="2" opacity="0.3" stroke-dasharray="5,5"/>
+                            <circle cx="200" cy="200" r="60" fill="url(#guideGradient)" fill-opacity="0.05"/>
+                            
+                            <!-- Subtle hand position indicators -->
+                            <g opacity="0.4">
+                                <!-- Wrist -->
+                                <circle cx="200" cy="260" r="6" fill="url(#guideGradient)" opacity="0.6"/>
+                                <!-- Palm center -->
+                                <circle cx="200" cy="200" r="4" fill="url(#guideGradient)" opacity="0.8"/>
+                                <!-- Finger positions -->
+                                <circle cx="170" cy="140" r="3" fill="url(#guideGradient)" opacity="0.4"/>
+                                <circle cx="190" cy="130" r="3" fill="url(#guideGradient)" opacity="0.4"/>
+                                <circle cx="210" cy="130" r="3" fill="url(#guideGradient)" opacity="0.4"/>
+                                <circle cx="230" cy="140" r="3" fill="url(#guideGradient)" opacity="0.4"/>
+                            </g>
+                            
+                            <text x="200" y="350" text-anchor="middle" class="guide-text" font-size="16" opacity="0.8">Position your palm in the center</text>
                         </svg>
                     </div>
                     
@@ -87,6 +96,7 @@
                 <button id="captureBtn" class="control-btn secondary" disabled>Capture</button>
                 <button id="irModeBtn" class="control-btn secondary">IR Mode: OFF</button>
                 <button id="galleryBtn" class="control-btn secondary">View Gallery</button>
+                <button id="settingsBtn" class="control-btn secondary">Settings</button>
             </div>
         </div>
         
@@ -98,6 +108,34 @@
             </div>
             <div id="galleryContent" class="gallery-content">
                 <!-- Captured images will be added here -->
+            </div>
+        </div>
+        
+        <!-- Settings Modal -->
+        <div id="settingsModal" class="settings-modal" style="display: none;">
+            <div class="settings-content">
+                <div class="settings-header">
+                    <h3>Camera Settings</h3>
+                    <button id="closeSettingsBtn" class="close-btn">&times;</button>
+                </div>
+                <div class="settings-body">
+                    <div class="setting-group">
+                        <label for="rgbCameraSelect">RGB Camera:</label>
+                        <select id="rgbCameraSelect" class="camera-select">
+                            <option value="default">Default Camera</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="irCameraSelect">IR Camera:</label>
+                        <select id="irCameraSelect" class="camera-select">
+                            <option value="default">Default Camera</option>
+                        </select>
+                    </div>
+                    <div class="settings-info">
+                        <p>Select different cameras for RGB and IR capture modes.</p>
+                        <p>IR cameras are automatically detected when available.</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
