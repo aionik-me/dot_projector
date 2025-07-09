@@ -90,7 +90,7 @@ class DotProjector {
         this.captureCooldown = 3000; // 3 seconds between captures
         
         // Debug mode
-        this.debug = true; // Enable debug logging
+        this.debug = false; // Set to true for debugging
         
         // IR mode
         this.irMode = false;
@@ -762,6 +762,11 @@ class DotProjector {
         const distance = this.calculateDistance(palmCenter);
         const alignment = this.calculateAlignment(landmarks);
         
+        // Detect if this is a left hand early
+        const indexMcp = landmarks[5];
+        const pinkyMcp = landmarks[17];
+        const isLeftHand = indexMcp.x > pinkyMcp.x;
+        
         // Convert palm coordinates to 3D space
         const palm3D = {
             x: (palmCenter.x - 0.5) * 60,
@@ -861,7 +866,7 @@ class DotProjector {
             this.updateStatus('Extend your fingers', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance < 8) {
+        } else if (distance < 5) {
             this.updateStatus('Move hand back slightly', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
@@ -869,20 +874,22 @@ class DotProjector {
             this.updateStatus('Move hand closer', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (alignment < 0.3) { // More lenient alignment
+        } else if (alignment < 0.3) { // Same threshold for both hands
             this.updateStatus('Center your palm', 'warning');
             this.perfectAlignmentTime = 0;
             this.isAutoCapturing = false;
-        } else if (distance >= 8 && distance <= 45 && alignment >= 0.3 && fingersExtended) {
+        } else if (distance >= 5 && distance <= 45 && alignment >= 0.3 && fingersExtended) {
             // Additional validation for proper hand position (with lenient thresholds)
             const isHandFlat = this.checkHandFlatness(landmarks);
+            
+            // Check palm orientation
             const isPalmFacingCamera = this.checkPalmOrientation(landmarks);
             
             // Check for hand rotation
             const rotation = this.checkHandRotation(landmarks);
             
             if (!isPalmFacingCamera) {
-                this.updateStatus('Show palm (not back of hand)', 'warning');
+                this.updateStatus('Close your palm a bit', 'warning');
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
             } else if (Math.abs(rotation) > 30) {
@@ -925,10 +932,11 @@ class DotProjector {
      */
     calculateDistance(palmCenter) {
         // Convert z-coordinate to distance in cm
-        // z is typically between -0.15 (close) and 0.15 (far)
+        // z is typically between -0.3 (very close) and 0.2 (far)
         // Adjusted for closer hand support
-        const normalizedZ = Math.max(-0.25, Math.min(0.25, palmCenter.z));
-        return Math.round(20 + normalizedZ * 100);
+        const normalizedZ = Math.max(-0.3, Math.min(0.2, palmCenter.z));
+        // Map to distance: very close (-0.3) = 5cm, far (0.2) = 45cm
+        return Math.round(25 + normalizedZ * 80);
     }
     
     calculateAlignment(landmarks) {
@@ -950,10 +958,10 @@ class DotProjector {
         
         // Calculate palm area to ensure hand is properly sized
         const palmArea = this.calculatePalmArea(landmarks);
-        const minArea = 0.02; // Very lenient minimum for closer hands
-        const maxArea = 0.3; // Allow larger hands
+        const minArea = 0.01; // Even more lenient minimum for very close hands
+        const maxArea = 0.4; // Allow very large hands when close
         const areaScore = palmArea < minArea ? palmArea / minArea : 
-                         palmArea > maxArea ? 0.7 : 1;
+                         palmArea > maxArea ? 0.8 : 1;
         
         // Check palm is facing camera (more lenient)
         const palmNormal = this.calculatePalmNormal(landmarks);
@@ -1045,9 +1053,9 @@ class DotProjector {
             const mag2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y);
             const alignment = dot / (mag1 * mag2);
             
-            // Finger is extended if alignment is good (slightly raised threshold)
-            // 0.6 allows natural extension without requiring perfectly straight fingers
-            if (alignment > 0.6) {
+            // Finger is extended if alignment is good (relaxed threshold)
+            // 0.5 allows more natural, relaxed finger positions
+            if (alignment > 0.5) {
                 extendedCount++;
             }
         });
@@ -1090,8 +1098,8 @@ class DotProjector {
             );
             
             // Finger is open if tip is far from palm and reasonably straight
-            // Increased thresholds to prevent partially closed fingers
-            if (tipToPalmDist > 0.18 && tipToMidDist > 0.07) {
+            // Relaxed thresholds to allow slightly closed fingers
+            if (tipToPalmDist > 0.15 && tipToMidDist > 0.05) {
                 openFingers++;
             }
         });
@@ -1104,21 +1112,21 @@ class DotProjector {
             maxZDeviation = Math.max(maxZDeviation, deviation);
         });
         
-        // Require at least 4 fingers open (not just 3) and reasonable flatness
-        // This ensures palm is properly open, not partially closed
-        return openFingers >= 4 && maxZDeviation < 0.12;
+        // Require at least 3 fingers open and reasonable flatness
+        // This allows for a slightly closed palm while still ensuring it's not a fist
+        return openFingers >= 3 && maxZDeviation < 0.15;
     }
     
     /**
      * Verifies palm is facing the camera using landmark analysis
-     * Works for both left and right hands
+     * Works equally for both left and right hands
      * 
      * @param {Array} landmarks - 21 hand landmarks from MediaPipe
      * @returns {boolean} True if palm is oriented toward camera
      */
     checkPalmOrientation(landmarks) {
-        // Key insight: MediaPipe tracks hands from both sides, but certain
-        // landmark relationships change subtly between palm and back views
+        // MediaPipe can track hands from both sides, so we use multiple checks
+        // to ensure we're seeing the palm side, not the back of the hand
         
         const wrist = landmarks[0];
         const thumbCmc = landmarks[1];
@@ -1155,6 +1163,7 @@ class DotProjector {
         // For palm view:
         // - Right hand: thumb should be on the left side of the index-pinky line (negative cross)
         // - Left hand: thumb should be on the right side of the index-pinky line (positive cross)
+        // Check thumb side for both hands
         const thumbSideCorrect = isLeftHand ? cross > 0 : cross < 0;
         
         // Method 2: Knuckle prominence check
@@ -1172,7 +1181,7 @@ class DotProjector {
         
         mcps.forEach(mcp => {
             // In back view, MCPs are closer (more negative Z)
-            if (mcp.z < palmCenter.z - 0.01) { // Small threshold
+            if (mcp.z < palmCenter.z - 0.01) {
                 mcpsCloserThanPalm++;
             }
         });
@@ -1226,22 +1235,22 @@ class DotProjector {
         // Method 6: Thumb base angle check
         // The angle between thumb CMC-MCP-IP changes between palm and back views
         const thumbAngle = this.calculateAngle(thumbCmc, thumbMcp, thumbIp);
-        const thumbAngleCorrect = isLeftHand ? 
-            (thumbAngle > 140 && thumbAngle < 200) : // Left hand expected range
-            (thumbAngle > 160 && thumbAngle < 220);  // Right hand expected range
+        // Use same range for both hands to avoid bias
+        const thumbAngleCorrect = thumbAngle > 150 && thumbAngle < 210;
         
         if (this.debug) {
             console.log('Palm orientation checks:', {
+                hand: isLeftHand ? 'LEFT' : 'RIGHT',
                 thumbSideCorrect,
                 mcpPatternCorrect,
                 thumbPatternCorrect,
                 gradientCorrect,
                 palmDepthCorrect,
                 thumbAngleCorrect,
+                passedChecks: [thumbSideCorrect, mcpPatternCorrect, thumbPatternCorrect, gradientCorrect, palmDepthCorrect, thumbAngleCorrect].filter(c => c).length,
                 mcpsCloserThanPalm,
                 thumbForwardness: thumbForwardness.toFixed(3),
-                thumbAngle: thumbAngle.toFixed(0),
-                isLeftHand
+                thumbAngle: thumbAngle.toFixed(0)
             });
         }
         
@@ -1255,7 +1264,8 @@ class DotProjector {
             thumbAngleCorrect
         ].filter(check => check).length;
         
-        return passedChecks >= 4; // At least 4 out of 6 checks must pass
+        // Use same threshold for both hands
+        return passedChecks >= 3; // At least 3 out of 6 checks must pass
     }
     
     /**

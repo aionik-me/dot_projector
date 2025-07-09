@@ -490,14 +490,84 @@ Potential additions:
 - Biometric matching algorithms
 - Multi-hand support
 
+## Production Deployment
+
+### Quick Start
+
+1. **Static Hosting** - Simply upload all files to any static web server (Apache, Nginx, etc.)
+2. **HTTPS Required** - Camera access requires HTTPS in production
+3. **No Build Process** - Files can be served directly
+
+### CDN Setup
+
+For better performance, consider using a CDN for dependencies:
+
+```html
+<!-- In index.html -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+```
+
+### Environment Configuration
+
+Set distance and validation thresholds in `app.js`:
+
+```javascript
+// Distance settings (lines 864-868)
+distance < 5    // Minimum distance (cm)
+distance > 45   // Maximum distance (cm)
+
+// Alignment threshold (line 877)
+alignment < 0.3 // Minimum alignment score
+
+// Palm validation (line 1277)
+passedChecks >= 3 // Required orientation checks
+```
+
+### Performance Optimization
+
+For production deployment:
+
+1. **Enable gzip compression** on your web server
+2. **Set appropriate cache headers** for static assets
+3. **Consider minifying** JavaScript and CSS files
+4. **Use HTTP/2** for parallel asset loading
+
+### Security Considerations
+
+1. **HTTPS is mandatory** for camera access
+2. **No data is transmitted** - all processing is client-side
+3. **Images are stored locally** in browser localStorage
+4. **Consider adding CSP headers** for additional security
+
 ## License
 
-[Your License Here]
+MIT License - see [LICENSE](LICENSE) file for details
 
 ## Contributing
 
-[Contributing Guidelines]
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Development Guidelines
+
+- Maintain the existing code style
+- Test on multiple devices and browsers
+- Ensure both left and right hands work equally well
+- Keep the UI clean and intuitive
+- Document any new features or changes
+
+## Support
+
+For questions, issues, or contributions:
+- Open an issue on GitHub
+- Check existing issues before creating new ones
+- Include browser and device information in bug reports
 
 ---
 
-For questions or support, please [contact information].
+Built with ❤️ using MediaPipe, Three.js, and modern web technologies.
