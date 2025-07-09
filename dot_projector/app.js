@@ -62,6 +62,7 @@ class DotProjector {
         this.animationFrame = 0;
         
         this.hands = null;
+        this.handedness = null; // Store left/right hand info
         this.videoElement = document.getElementById('inputVideo');
         this.captureCanvas = document.getElementById('captureCanvas');
         this.captureCtx = this.captureCanvas.getContext('2d');
@@ -88,6 +89,9 @@ class DotProjector {
         this.lastCaptureTime = 0;
         this.captureCooldown = 3000; // 3 seconds between captures
         
+        // Debug mode
+        this.debug = true; // Enable debug logging
+        
         // IR mode
         this.irMode = false;
         this.veinPattern = null;
@@ -97,6 +101,9 @@ class DotProjector {
         this.selectedCameraId = null;
         this.selectedIRCameraId = null;
         this.hasIRCamera = false;
+        
+        // Debug mode - enable to see orientation values in console
+        this.debug = false;
         
         this.init();
     }
@@ -525,11 +532,16 @@ class DotProjector {
      * 
      * @param {Object} results - MediaPipe detection results
      * @param {Array} results.multiHandLandmarks - Array of detected hands (21 landmarks each)
+     * @param {Array} results.multiHandedness - Handedness info (left/right)
      * @private
      */
     onHandResults(results) {
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             this.palmData = results.multiHandLandmarks[0];
+            // Store handedness info if available
+            if (results.multiHandedness && results.multiHandedness.length > 0) {
+                this.handedness = results.multiHandedness[0].label;
+            }
             this.updateHandVisualization(this.palmData);
             this.updatePalmVisualization(this.palmData);
             this.updateMetrics(this.palmData);
@@ -538,6 +550,7 @@ class DotProjector {
             document.getElementById('guidanceOverlay').style.opacity = '0.2';
         } else {
             this.palmData = null;
+            this.handedness = null;
             this.updateStatus('Place your palm in view', 'warning');
             // Show guide overlay when no hand is detected
             document.getElementById('guidanceOverlay').style.opacity = '1';
@@ -869,7 +882,7 @@ class DotProjector {
             const rotation = this.checkHandRotation(landmarks);
             
             if (!isPalmFacingCamera) {
-                this.updateStatus('Turn palm toward camera', 'warning');
+                this.updateStatus('Show palm (not back of hand)', 'warning');
                 this.perfectAlignmentTime = 0;
                 this.isAutoCapturing = false;
             } else if (Math.abs(rotation) > 30) {
@@ -1097,19 +1110,214 @@ class DotProjector {
     }
     
     /**
-     * Verifies palm is facing the camera using normal vector calculation
+     * Verifies palm is facing the camera using landmark analysis
      * Works for both left and right hands
      * 
      * @param {Array} landmarks - 21 hand landmarks from MediaPipe
      * @returns {boolean} True if palm is oriented toward camera
      */
     checkPalmOrientation(landmarks) {
-        // Check if palm is facing camera using normal vector
-        const normal = this.calculatePalmNormal(landmarks);
+        // Key insight: MediaPipe tracks hands from both sides, but certain
+        // landmark relationships change subtly between palm and back views
         
-        // For proper palm orientation, the absolute value of normal.z should be high
-        // This works for both left and right hands
-        return Math.abs(normal.z) > 0.5;
+        const wrist = landmarks[0];
+        const thumbCmc = landmarks[1];
+        const thumbMcp = landmarks[2];
+        const thumbIp = landmarks[3];
+        const thumbTip = landmarks[4];
+        const indexMcp = landmarks[5];
+        const middleMcp = landmarks[9];
+        const ringMcp = landmarks[13];
+        const pinkyMcp = landmarks[17];
+        
+        // Method 1: Thumb CMC (carpometacarpal) position check
+        // When viewing palm, thumb CMC is visually "inside" the hand outline
+        // When viewing back, thumb CMC appears more "outside"
+        
+        // Create a line from index MCP to pinky MCP
+        const indexToPinky = {
+            x: pinkyMcp.x - indexMcp.x,
+            y: pinkyMcp.y - indexMcp.y
+        };
+        
+        // Vector from index MCP to thumb CMC
+        const indexToThumb = {
+            x: thumbCmc.x - indexMcp.x,
+            y: thumbCmc.y - indexMcp.y
+        };
+        
+        // Calculate cross product (2D)
+        const cross = indexToPinky.x * indexToThumb.y - indexToPinky.y * indexToThumb.x;
+        
+        // Determine if left or right hand
+        const isLeftHand = indexMcp.x > pinkyMcp.x;
+        
+        // For palm view:
+        // - Right hand: thumb should be on the left side of the index-pinky line (negative cross)
+        // - Left hand: thumb should be on the right side of the index-pinky line (positive cross)
+        const thumbSideCorrect = isLeftHand ? cross > 0 : cross < 0;
+        
+        // Method 2: Knuckle prominence check
+        // When viewing the back of hand, knuckles (MCPs) are more prominent (closer to camera)
+        // When viewing palm, finger bases are less prominent relative to palm center
+        const palmCenter = {
+            x: (wrist.x + indexMcp.x + pinkyMcp.x) / 3,
+            y: (wrist.y + indexMcp.y + pinkyMcp.y) / 3,
+            z: (wrist.z + indexMcp.z + pinkyMcp.z) / 3
+        };
+        
+        // Check MCP prominence
+        const mcps = [indexMcp, middleMcp, ringMcp, pinkyMcp];
+        let mcpsCloserThanPalm = 0;
+        
+        mcps.forEach(mcp => {
+            // In back view, MCPs are closer (more negative Z)
+            if (mcp.z < palmCenter.z - 0.01) { // Small threshold
+                mcpsCloserThanPalm++;
+            }
+        });
+        
+        // For palm view, MCPs should not be significantly closer than palm center
+        const mcpPatternCorrect = mcpsCloserThanPalm < 2;
+        
+        // Method 3: Thumb rotation check
+        // The thumb's orientation relative to the palm changes between views
+        const thumbVector = {
+            x: thumbTip.x - thumbCmc.x,
+            y: thumbTip.y - thumbCmc.y,
+            z: thumbTip.z - thumbCmc.z
+        };
+        
+        const palmNormal = this.calculateSimplePalmNormal(landmarks);
+        
+        // For palm view, thumb extends somewhat forward (negative Z direction)
+        // For back view, thumb appears more parallel to palm
+        const thumbForwardness = -thumbVector.z; // Negative because forward is -Z
+        const thumbPatternCorrect = thumbForwardness > 0.02;
+        
+        // Method 4: Wrist-to-fingers depth gradient
+        // In palm view, there's usually a gradual depth change from wrist to fingers
+        // In back view, the gradient can be reversed or irregular
+        const fingerBases = [indexMcp, middleMcp, ringMcp, pinkyMcp];
+        let gradientScore = 0;
+        
+        fingerBases.forEach(base => {
+            // Check if finger bases are further than wrist (expected for palm)
+            if (base.z > wrist.z) {
+                gradientScore++;
+            }
+        });
+        
+        const gradientCorrect = gradientScore >= 3;
+        
+        // Method 5: Palm center depth check
+        // In palm view, the palm center (between wrist and MCPs) tends to be slightly recessed
+        // In back view, this area tends to be more prominent
+        const realPalmCenter = {
+            x: (wrist.x + indexMcp.x + middleMcp.x + ringMcp.x + pinkyMcp.x) / 5,
+            y: (wrist.y + indexMcp.y + middleMcp.y + ringMcp.y + pinkyMcp.y) / 5,
+            z: (wrist.z + indexMcp.z + middleMcp.z + ringMcp.z + pinkyMcp.z) / 5
+        };
+        
+        // Compare with middle of middle finger (landmark 11)
+        const middleMiddle = landmarks[11];
+        const palmDepthCorrect = realPalmCenter.z > middleMiddle.z - 0.02; // Palm should not be too prominent
+        
+        // Method 6: Thumb base angle check
+        // The angle between thumb CMC-MCP-IP changes between palm and back views
+        const thumbAngle = this.calculateAngle(thumbCmc, thumbMcp, thumbIp);
+        const thumbAngleCorrect = isLeftHand ? 
+            (thumbAngle > 140 && thumbAngle < 200) : // Left hand expected range
+            (thumbAngle > 160 && thumbAngle < 220);  // Right hand expected range
+        
+        if (this.debug) {
+            console.log('Palm orientation checks:', {
+                thumbSideCorrect,
+                mcpPatternCorrect,
+                thumbPatternCorrect,
+                gradientCorrect,
+                palmDepthCorrect,
+                thumbAngleCorrect,
+                mcpsCloserThanPalm,
+                thumbForwardness: thumbForwardness.toFixed(3),
+                thumbAngle: thumbAngle.toFixed(0),
+                isLeftHand
+            });
+        }
+        
+        // Require multiple checks to pass
+        const passedChecks = [
+            thumbSideCorrect, 
+            mcpPatternCorrect, 
+            thumbPatternCorrect, 
+            gradientCorrect,
+            palmDepthCorrect,
+            thumbAngleCorrect
+        ].filter(check => check).length;
+        
+        return passedChecks >= 4; // At least 4 out of 6 checks must pass
+    }
+    
+    /**
+     * Calculate angle between three points in degrees
+     */
+    calculateAngle(p1, p2, p3) {
+        const v1 = {
+            x: p1.x - p2.x,
+            y: p1.y - p2.y,
+            z: p1.z - p2.z
+        };
+        
+        const v2 = {
+            x: p3.x - p2.x,
+            y: p3.y - p2.y,
+            z: p3.z - p2.z
+        };
+        
+        const dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+        const len1 = Math.sqrt(v1.x ** 2 + v1.y ** 2 + v1.z ** 2);
+        const len2 = Math.sqrt(v2.x ** 2 + v2.y ** 2 + v2.z ** 2);
+        
+        const angle = Math.acos(Math.max(-1, Math.min(1, dot / (len1 * len2))));
+        return angle * 180 / Math.PI;
+    }
+    
+    /**
+     * Calculate a simple palm normal for thumb orientation check
+     */
+    calculateSimplePalmNormal(landmarks) {
+        const wrist = landmarks[0];
+        const indexMcp = landmarks[5];
+        const pinkyMcp = landmarks[17];
+        
+        // Two vectors in palm plane
+        const v1 = {
+            x: indexMcp.x - wrist.x,
+            y: indexMcp.y - wrist.y,
+            z: indexMcp.z - wrist.z
+        };
+        
+        const v2 = {
+            x: pinkyMcp.x - wrist.x,
+            y: pinkyMcp.y - wrist.y,
+            z: pinkyMcp.z - wrist.z
+        };
+        
+        // Cross product
+        const normal = {
+            x: v1.y * v2.z - v1.z * v2.y,
+            y: v1.z * v2.x - v1.x * v2.z,
+            z: v1.x * v2.y - v1.y * v2.x
+        };
+        
+        // Normalize
+        const length = Math.sqrt(normal.x ** 2 + normal.y ** 2 + normal.z ** 2);
+        
+        return {
+            x: normal.x / length,
+            y: normal.y / length,
+            z: normal.z / length
+        };
     }
     
     /**
@@ -1153,6 +1361,61 @@ class DotProjector {
         return angle; // Returns rotation in degrees (positive = needs clockwise rotation)
     }
     
+    /**
+     * Calculates full hand orientation (pitch, roll, yaw)
+     * Returns euler angles for complete 3D orientation
+     * 
+     * @param {Array} landmarks - 21 hand landmarks
+     * @returns {Object} {pitch, roll, yaw} in degrees
+     */
+    calculateHandOrientation(landmarks) {
+        const wrist = landmarks[0];
+        const middleBase = landmarks[9];
+        const indexBase = landmarks[5];
+        const pinkyBase = landmarks[17];
+        
+        // Calculate hand coordinate system
+        // X-axis: from pinky to index (across palm)
+        const xAxis = {
+            x: indexBase.x - pinkyBase.x,
+            y: indexBase.y - pinkyBase.y,
+            z: indexBase.z - pinkyBase.z
+        };
+        
+        // Y-axis: from wrist to middle finger (along palm)
+        const yAxis = {
+            x: middleBase.x - wrist.x,
+            y: middleBase.y - wrist.y,
+            z: middleBase.z - wrist.z
+        };
+        
+        // Normalize axes
+        const xLength = Math.sqrt(xAxis.x**2 + xAxis.y**2 + xAxis.z**2);
+        const yLength = Math.sqrt(yAxis.x**2 + yAxis.y**2 + yAxis.z**2);
+        
+        xAxis.x /= xLength; xAxis.y /= xLength; xAxis.z /= xLength;
+        yAxis.x /= yLength; yAxis.y /= yLength; yAxis.z /= yLength;
+        
+        // Z-axis: cross product (palm normal)
+        const zAxis = {
+            x: xAxis.y * yAxis.z - xAxis.z * yAxis.y,
+            y: xAxis.z * yAxis.x - xAxis.x * yAxis.z,
+            z: xAxis.x * yAxis.y - xAxis.y * yAxis.x
+        };
+        
+        // Extract euler angles
+        // Pitch: rotation around X-axis (tilt forward/back)
+        const pitch = Math.atan2(-zAxis.y, Math.sqrt(zAxis.x**2 + zAxis.z**2)) * 180 / Math.PI;
+        
+        // Roll: rotation around Z-axis (tilt left/right)
+        const roll = Math.atan2(xAxis.z, yAxis.z) * 180 / Math.PI;
+        
+        // Yaw: rotation around Y-axis (already implemented as rotation)
+        const yaw = this.checkHandRotation(landmarks);
+        
+        return { pitch, roll, yaw };
+    }
+    
     calculatePalmNormal(landmarks) {
         const wrist = landmarks[0];
         const index = landmarks[5];
@@ -1173,22 +1436,19 @@ class DotProjector {
             z: pinky.z - wrist.z
         };
         
-        // Adjust cross product order based on hand type
-        let normal;
+        // Use consistent cross product - MediaPipe landmarks are always palm-side
+        // For palm-facing-camera, we want normal pointing toward camera (negative Z)
+        const normal = {
+            x: v1.y * v2.z - v1.z * v2.y,
+            y: v1.z * v2.x - v1.x * v2.z,
+            z: v1.x * v2.y - v1.y * v2.x
+        };
+        
+        // For left hands, we need to flip the normal
         if (isLeftHand) {
-            // Left hand: reverse cross product
-            normal = {
-                x: v2.y * v1.z - v2.z * v1.y,
-                y: v2.z * v1.x - v2.x * v1.z,
-                z: v2.x * v1.y - v2.y * v1.x
-            };
-        } else {
-            // Right hand: normal cross product
-            normal = {
-                x: v1.y * v2.z - v1.z * v2.y,
-                y: v1.z * v2.x - v1.x * v2.z,
-                z: v1.x * v2.y - v1.y * v2.x
-            };
+            normal.x *= -1;
+            normal.y *= -1;
+            normal.z *= -1;
         }
         
         const length = Math.sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
@@ -1208,6 +1468,17 @@ class DotProjector {
         const alignment = this.calculateAlignment(landmarks);
         const features = this.detectFeatures(landmarks);
         
+        // Get full orientation
+        const orientation = this.calculateHandOrientation(landmarks);
+        
+        // Store for access
+        this.currentOrientation = orientation;
+        this.currentPosition = {
+            x: palmCenter.x * 100,  // Convert to percentage
+            y: palmCenter.y * 100,  // Convert to percentage
+            z: distance
+        };
+        
         this.updateMetricBar('distance', distance, 50);
         this.updateMetricBar('alignment', alignment * 100, 100);
         this.updateMetricBar('features', features, 100);
@@ -1215,6 +1486,15 @@ class DotProjector {
         document.querySelector('.distance-value').textContent = `${Math.round(distance)}cm`;
         document.querySelector('.alignment-value').textContent = `${Math.round(alignment * 100)}%`;
         document.querySelector('.features-value').textContent = `${Math.round(features)}%`;
+        
+        // Debug orientation (optional)
+        if (this.debug) {
+            console.log('Hand Orientation:', {
+                pitch: orientation.pitch.toFixed(1) + '°',
+                roll: orientation.roll.toFixed(1) + '°',
+                yaw: orientation.yaw.toFixed(1) + '°'
+            });
+        }
     }
     
     detectFeatures(landmarks) {
